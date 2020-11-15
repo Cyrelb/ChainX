@@ -12,7 +12,7 @@ use sp_runtime::{
 };
 
 use chainx_primitives::AssetId;
-use xpallet_protocol::X_BTC;
+use xp_protocol::X_BTC;
 
 use crate::*;
 
@@ -70,7 +70,7 @@ impl frame_system::Trait for Test {
     type MaximumBlockLength = MaximumBlockLength;
     type AvailableBlockRatio = AvailableBlockRatio;
     type Version = ();
-    type ModuleToIndex = ();
+    type PalletInfo = ();
     type AccountData = ();
     type OnNewAccount = ();
     type OnKilledAccount = ();
@@ -97,7 +97,7 @@ impl Default for ExtBuilder {
 
 pub(crate) fn btc() -> (AssetId, AssetInfo) {
     (
-        xpallet_protocol::X_BTC,
+        xp_protocol::X_BTC,
         AssetInfo::new::<Test>(
             b"X-BTC".to_vec(),
             b"X-BTC".to_vec(),

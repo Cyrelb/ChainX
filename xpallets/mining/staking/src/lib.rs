@@ -28,6 +28,8 @@ mod mock;
 #[cfg(test)]
 mod tests;
 
+use sp_std::prelude::*;
+
 use frame_support::{
     decl_error, decl_event, decl_module, decl_storage, ensure,
     storage::IterableStorageMap,
@@ -35,24 +37,23 @@ use frame_support::{
 };
 use frame_system::{ensure_root, ensure_signed};
 use sp_runtime::{
-    traits::{CheckedSub, Convert, SaturatedConversion, Saturating, StaticLookup, Zero},
-    DispatchResult,
+    traits::{Convert, SaturatedConversion, Saturating, StaticLookup, Zero},
+    DispatchResult, Perbill,
 };
 use sp_std::collections::btree_map::BTreeMap;
-use sp_std::prelude::*;
 
 use chainx_primitives::ReferralId;
-use constants::*;
-use xp_mining_common::{
-    Claim, ComputeMiningWeight, Delta, RewardPotAccountFor, ZeroMiningWeightError,
-};
+use xp_logging::debug;
+pub use xp_mining_common::RewardPotAccountFor;
+use xp_mining_common::{Claim, ComputeMiningWeight, Delta, ZeroMiningWeightError};
 use xp_mining_staking::{AssetMining, SessionIndex, UnbondedIndex};
-use xpallet_support::{debug, traits::TreasuryAccount};
+use xpallet_support::traits::TreasuryAccount;
 
-pub use impls::{IdentificationTuple, SimpleValidatorRewardPotAccountDeterminer};
-pub use rpc::*;
-pub use types::*;
-pub use weight_info::WeightInfo;
+use self::constants::*;
+pub use self::impls::{IdentificationTuple, SimpleValidatorRewardPotAccountDeterminer};
+pub use self::rpc::*;
+pub use self::types::*;
+pub use self::weight_info::WeightInfo;
 
 pub type BalanceOf<T> =
     <<T as Trait>::Currency as Currency<<T as frame_system::Trait>::AccountId>>::Balance;
@@ -83,6 +84,12 @@ pub trait Trait: frame_system::Trait {
     ///
     /// When the ChainX 2.0 migration happens, the first halving epoch is not over yet.
     type MigrationSessionOffset: Get<SessionIndex>;
+
+    /// The minimum byte length of validator referral id.
+    type MinimumReferralId: Get<u32>;
+
+    /// The maximum byte length of validator referral id.
+    type MaximumReferralId: Get<u32>;
 
     /// An expected duration of the session.
     ///
@@ -149,12 +156,12 @@ decl_storage! {
 
         /// The map from validator key to the vote weight ledger of that validator.
         pub ValidatorLedgers get(fn validator_ledgers):
-            map hasher(twox_64_concat) T::AccountId => ValidatorLedger<BalanceOf<T>, T::BlockNumber>;
+            map hasher(twox_64_concat) T::AccountId => ValidatorLedger<BalanceOf<T>, VoteWeight, T::BlockNumber>;
 
         /// The map from nominator to the vote weight ledger of all nominees.
         pub Nominations get(fn nominations):
             double_map hasher(twox_64_concat) T::AccountId, hasher(twox_64_concat) T::AccountId
-            => NominatorLedger<BalanceOf<T>, T::BlockNumber>;
+            => NominatorLedger<BalanceOf<T>, VoteWeight, T::BlockNumber>;
 
         /// The map from nominator to the block number of last `rebond` operation.
         pub LastRebondOf get(fn last_rebond_of):
@@ -187,32 +194,20 @@ decl_storage! {
         /// forcing into account.
         pub IsCurrentSessionFinal get(fn is_current_session_final): bool = false;
 
-        /// Offenders reported in current session.
-        OffendersInSession get(fn offenders_in_session): Vec<T::AccountId>;
+        /// Offenders reported in last session.
+        SessionOffenders get(fn session_offenders): Option<BTreeMap<T::AccountId, Perbill>>;
 
         /// Minimum penalty for each slash.
         pub MinimumPenalty get(fn minimum_penalty) config(): BalanceOf<T>;
-
-        /// The higher the severity, the more slash for the offences.
-        pub OffenceSeverity get(fn offence_severity) config(): u32;
     }
 
     add_extra_genesis {
-        config(validators):
-            Vec<(T::AccountId, ReferralId, BalanceOf<T>)>;
+        // Staking validators are used for initializing the genesis easier in tests.
+        // For the mainnet genesis, use `Module::<T>::initialize_validators()`.
+        config(validators): Vec<(T::AccountId, ReferralId, BalanceOf<T>)>;
         config(glob_dist_ratio): (u32, u32);
         config(mining_ratio): (u32, u32);
         build(|config: &GenesisConfig<T>| {
-            assert!(config.offence_severity > 1, "Offence severity too weak");
-            for &(ref v, ref referral_id, balance) in &config.validators {
-                assert!(
-                    Module::<T>::free_balance(v) >= balance,
-                    "Validator does not have enough balance to bond."
-                );
-                Module::<T>::check_referral_id(referral_id).expect("Invalid referral_id in genesis");
-                Module::<T>::apply_register(v, referral_id.to_vec());
-                Module::<T>::apply_bond(v, v, balance).expect("Staking genesis initialization can not fail");
-            }
             assert!(config.glob_dist_ratio.0 + config.glob_dist_ratio.1 > 0);
             assert!(config.mining_ratio.0 + config.mining_ratio.1 > 0);
             GlobalDistributionRatio::put(GlobalDistribution {
@@ -223,6 +218,18 @@ decl_storage! {
                 asset: config.mining_ratio.0,
                 staking: config.mining_ratio.1,
             });
+
+            for (validator, referral_id, balance) in &config.validators {
+                assert!(
+                    Module::<T>::free_balance(validator) >= *balance,
+                    "Validator does not have enough balance to bond."
+                );
+                Module::<T>::check_referral_id(referral_id)
+                    .expect("Validator referral id must be valid; qed");
+                Module::<T>::apply_register(validator, referral_id.to_vec());
+                Module::<T>::apply_bond(validator, validator, *balance)
+                    .expect("Bonding to validator itself can not fail; qed");
+            }
         });
     }
 }
@@ -234,20 +241,20 @@ decl_event!(
         <T as frame_system::Trait>::AccountId
     {
         /// Issue new balance to this account. [account, reward_amount]
-        Mint(AccountId, Balance),
-        /// One validator (and its reward pot) has been slashed by the given amount. [validator, slashed_amount]
-        Slash(AccountId, Balance),
-        /// Nominator has bonded to the validator this amount. [nominator, validator, amount]
-        Bond(AccountId, AccountId, Balance),
-        /// Nominator switched the vote from one validator to another. [nominator, from, to, amount]
-        Rebond(AccountId, AccountId, AccountId, Balance),
-        /// An account has unbonded this amount. [nominator, validator, amount]
-        Unbond(AccountId, AccountId, Balance),
-        /// Claim the staking dividend. [nominator, validator, dividend]
-        Claim(AccountId, AccountId, Balance),
-        /// The nominator has withdrawn the locked balance due to the unbond operation. [nominator, amount]
-        UnlockUnbondedWithdrawal(AccountId, Balance),
-        /// Offenders are forcibly to be chilled due to insufficient reward pot balance. [session_index, chilled_validators]
+        Minted(AccountId, Balance),
+        /// A validator (and its reward pot) was slashed. [validator, slashed_amount]
+        Slashed(AccountId, Balance),
+        /// A nominator bonded to the validator this amount. [nominator, validator, amount]
+        Bonded(AccountId, AccountId, Balance),
+        /// A nominator switched the vote from one validator to another. [nominator, from, to, amount]
+        Rebonded(AccountId, AccountId, AccountId, Balance),
+        /// A nominator unbonded this amount. [nominator, validator, amount]
+        Unbonded(AccountId, AccountId, Balance),
+        /// A nominator claimed the staking dividend. [nominator, validator, dividend]
+        Claimed(AccountId, AccountId, Balance),
+        /// The nominator withdrew the locked balance from the unlocking queue. [nominator, amount]
+        Withdrawn(AccountId, Balance),
+        /// Offenders were forcibly to be chilled due to insufficient reward pot balance. [session_index, chilled_validators]
         ForceChilled(SessionIndex, Vec<AccountId>),
     }
 );
@@ -306,6 +313,11 @@ impl<T: Trait> From<ZeroMiningWeightError> for Error<T> {
 
 decl_module! {
     pub struct Module<T: Trait> for enum Call where origin: T::Origin {
+        /// The minimum byte length of referral id.
+        const MinimumReferralId: u32 = T::MinimumReferralId::get();
+
+        /// The maximum byte length of referral id.
+        const MaximumReferralId: u32 = T::MaximumReferralId::get();
 
         type Error = Error<T>;
 
@@ -360,14 +372,7 @@ decl_module! {
             let sender = ensure_signed(origin)?;
             let target = T::Lookup::lookup(target)?;
 
-            ensure!(!value.is_zero(), Error::<T>::ZeroBalance);
-            ensure!(Self::is_validator(&target), Error::<T>::NotValidator);
-            ensure!(value <= Self::bonded_to(&sender, &target), Error::<T>::InvalidUnbondBalance);
-            ensure!(
-                Self::unbonded_chunks_of(&sender, &target).len() < Self::maximum_unbonded_chunk_size() as usize,
-                Error::<T>::NoMoreUnbondChunks
-            );
-
+            Self::can_unbond(&sender, &target, value)?;
             Self::apply_unbond(&sender, &target, value)?;
         }
 
@@ -394,11 +399,11 @@ decl_module! {
             Self::apply_unlock_unbonded_withdrawal(&sender, value);
 
             unbonded_chunks.swap_remove(unbonded_index as usize);
-            Nominations::<T>::mutate(&sender, &target, |nominator_profile| {
-                nominator_profile.unbonded_chunks = unbonded_chunks;
+            Nominations::<T>::mutate(&sender, &target, |nominator| {
+                nominator.unbonded_chunks = unbonded_chunks;
             });
 
-            Self::deposit_event(RawEvent::UnlockUnbondedWithdrawal(sender, value));
+            Self::deposit_event(Event::<T>::Withdrawn(sender, value));
         }
 
         /// Claim the staking reward given the `target` validator.
@@ -417,8 +422,8 @@ decl_module! {
         fn validate(origin) {
             let sender = ensure_signed(origin)?;
             ensure!(Self::is_validator(&sender), Error::<T>::NotValidator);
-            Validators::<T>::mutate(sender, |validator_profile| {
-                    validator_profile.is_chilled = false;
+            Validators::<T>::mutate(sender, |validator| {
+                    validator.is_chilled = false;
                 }
             );
         }
@@ -431,9 +436,9 @@ decl_module! {
             if Self::is_active(&sender) {
                 ensure!(Self::can_force_chilled(), Error::<T>::TooFewActiveValidators);
             }
-            Validators::<T>::mutate(sender, |validator_profile| {
-                    validator_profile.is_chilled = true;
-                    validator_profile.last_chilled = Some(<frame_system::Module<T>>::block_number());
+            Validators::<T>::mutate(sender, |validator| {
+                    validator.is_chilled = true;
+                    validator.last_chilled = Some(<frame_system::Module<T>>::block_number());
                 }
             );
         }
@@ -498,13 +503,6 @@ decl_module! {
             ensure_root(origin)?;
             SessionsPerEra::put(new);
         }
-
-        #[weight = 10_000_000]
-        fn set_offence_severity(origin, #[compact] new: u32) {
-            ensure_root(origin)?;
-            ensure!(new > 1, Error::<T>::WeakOffenceSeverity);
-            OffenceSeverity::put(new);
-        }
     }
 }
 
@@ -553,6 +551,95 @@ impl<T: Trait> xpallet_support::traits::Validator<T::AccountId> for Module<T> {
 }
 
 impl<T: Trait> Module<T> {
+    #[cfg(feature = "std")]
+    pub fn initialize_validators(
+        validators: &[xp_genesis_builder::ValidatorInfo<T::AccountId, BalanceOf<T>>],
+    ) -> DispatchResult {
+        for xp_genesis_builder::ValidatorInfo {
+            who,
+            referral_id,
+            self_bonded,
+            total_nomination,
+            total_weight,
+        } in validators
+        {
+            Self::check_referral_id(referral_id)?;
+            if !self_bonded.is_zero() {
+                assert!(
+                    Self::free_balance(who) >= *self_bonded,
+                    "Validator does not have enough balance to bond."
+                );
+                Self::bond_reserve(who, *self_bonded)?;
+                Nominations::<T>::mutate(who, who, |nominator| {
+                    nominator.nomination = *self_bonded;
+                });
+            }
+            Self::apply_register(who, referral_id.to_vec());
+            // These validators will be chilled on the network startup.
+            Self::apply_force_chilled(who);
+
+            ValidatorLedgers::<T>::mutate(who, |validator| {
+                validator.total_nomination = *total_nomination;
+                validator.last_total_vote_weight = *total_weight;
+            });
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "std")]
+    pub fn force_bond(
+        sender: &T::AccountId,
+        target: &T::AccountId,
+        value: BalanceOf<T>,
+    ) -> DispatchResult {
+        if !value.is_zero() {
+            Self::bond_reserve(sender, value)?;
+            Nominations::<T>::mutate(sender, target, |nominator| {
+                nominator.nomination = value;
+            });
+        }
+        Ok(())
+    }
+
+    /// Mock the `unbond` operation but lock the funds until the specific height `locked_until`.
+    #[cfg(feature = "std")]
+    pub fn force_unbond(
+        sender: &T::AccountId,
+        target: &T::AccountId,
+        value: BalanceOf<T>,
+        locked_until: T::BlockNumber,
+    ) -> DispatchResult {
+        // We can not reuse can_unbond() as the target can has no bond but has unbonds.
+        // Self::can_unbond(sender, target, value)?;
+        ensure!(Self::is_validator(target), Error::<T>::NotValidator);
+        ensure!(
+            Self::unbonded_chunks_of(sender, target).len()
+                < Self::maximum_unbonded_chunk_size() as usize,
+            Error::<T>::NoMoreUnbondChunks
+        );
+        Self::unbond_reserve(sender, value)?;
+        Self::mutate_unbonded_chunks(sender, target, value, locked_until);
+        Ok(())
+    }
+
+    #[cfg(feature = "std")]
+    pub fn force_set_nominator_vote_weight(
+        nominator: &T::AccountId,
+        validator: &T::AccountId,
+        new_weight: VoteWeight,
+    ) {
+        Nominations::<T>::mutate(nominator, validator, |nominator| {
+            nominator.last_vote_weight = new_weight;
+        });
+    }
+
+    #[cfg(feature = "std")]
+    pub fn force_set_validator_vote_weight(who: &T::AccountId, new_weight: VoteWeight) {
+        ValidatorLedgers::<T>::mutate(who, |validator| {
+            validator.last_total_vote_weight = new_weight;
+        });
+    }
+
     /// Returns true if the account `who` is a validator.
     #[inline]
     pub fn is_validator(who: &T::AccountId) -> bool {
@@ -625,7 +712,7 @@ impl<T: Trait> Module<T> {
     /// Returns the total votes of a validator.
     #[inline]
     fn total_votes_of(validator: &T::AccountId) -> BalanceOf<T> {
-        ValidatorLedgers::<T>::get(validator).total
+        ValidatorLedgers::<T>::get(validator).total_nomination
     }
 
     /// Returns the balance of `nominator` has voted to `nominee`.
@@ -670,11 +757,10 @@ impl<T: Trait> Module<T> {
     }
 
     fn check_referral_id(referral_id: &[u8]) -> Result<(), Error<T>> {
-        const MIMUM_REFERRAL_ID: usize = 2;
-        const MAXIMUM_REFERRAL_ID: usize = 12;
         let referral_id_len = referral_id.len();
         ensure!(
-            referral_id_len >= MIMUM_REFERRAL_ID && referral_id_len <= MAXIMUM_REFERRAL_ID,
+            referral_id_len >= T::MinimumReferralId::get() as usize
+                && referral_id_len <= T::MaximumReferralId::get() as usize,
             Error::<T>::InvalidReferralIdentityLength
         );
         ensure!(
@@ -744,9 +830,9 @@ impl<T: Trait> Module<T> {
 
     /// Force the validator `who` to be chilled.
     fn apply_force_chilled(who: &T::AccountId) {
-        Validators::<T>::mutate(who, |validator_profile| {
-            validator_profile.is_chilled = true;
-            validator_profile.last_chilled = Some(<frame_system::Module<T>>::block_number());
+        Validators::<T>::mutate(who, |validator| {
+            validator.is_chilled = true;
+            validator.last_chilled = Some(<frame_system::Module<T>>::block_number());
         });
     }
 
@@ -756,14 +842,34 @@ impl<T: Trait> Module<T> {
         let old_bonded = *new_locks.entry(LockedType::Bonded).or_default();
         let new_bonded = old_bonded + value;
 
-        Self::free_balance(who)
-            .checked_sub(&new_bonded)
-            .ok_or(Error::<T>::InsufficientBalance)?;
+        ensure!(
+            Self::free_balance(who) >= new_bonded,
+            Error::<T>::InsufficientBalance
+        );
 
         Self::set_lock(who, new_bonded);
         new_locks.insert(LockedType::Bonded, new_bonded);
         Locks::<T>::insert(who, new_locks);
 
+        Ok(())
+    }
+
+    fn can_unbond(
+        sender: &T::AccountId,
+        target: &T::AccountId,
+        value: BalanceOf<T>,
+    ) -> DispatchResult {
+        ensure!(!value.is_zero(), Error::<T>::ZeroBalance);
+        ensure!(Self::is_validator(target), Error::<T>::NotValidator);
+        ensure!(
+            value <= Self::bonded_to(sender, target),
+            Error::<T>::InvalidUnbondBalance
+        );
+        ensure!(
+            Self::unbonded_chunks_of(sender, target).len()
+                < Self::maximum_unbonded_chunk_size() as usize,
+            Error::<T>::NoMoreUnbondChunks
+        );
         Ok(())
     }
 
@@ -829,7 +935,11 @@ impl<T: Trait> Module<T> {
     ) -> DispatchResult {
         Self::bond_reserve(nominator, value)?;
         Self::update_vote_weight(nominator, nominee, Delta::Add(value));
-        Self::deposit_event(RawEvent::Bond(nominator.clone(), nominee.clone(), value));
+        Self::deposit_event(Event::<T>::Bonded(
+            nominator.clone(),
+            nominee.clone(),
+            value,
+        ));
         Ok(())
     }
 
@@ -845,12 +955,42 @@ impl<T: Trait> Module<T> {
         LastRebondOf::<T>::mutate(who, |last_rebond| {
             *last_rebond = Some(current_block);
         });
-        Self::deposit_event(RawEvent::Rebond(
+        Self::deposit_event(Event::<T>::Rebonded(
             who.clone(),
             from.clone(),
             to.clone(),
             value,
         ));
+    }
+
+    fn mutate_unbonded_chunks(
+        who: &T::AccountId,
+        target: &T::AccountId,
+        value: BalanceOf<T>,
+        locked_until: T::BlockNumber,
+    ) {
+        Nominations::<T>::mutate(who, target, |nominator| {
+            if let Some(idx) = nominator
+                .unbonded_chunks
+                .iter()
+                .position(|x| x.locked_until == locked_until)
+            {
+                nominator.unbonded_chunks[idx].value += value;
+            } else {
+                nominator.unbonded_chunks.push(Unbonded {
+                    value,
+                    locked_until,
+                });
+            }
+        });
+    }
+
+    fn bonding_duration_for(who: &T::AccountId, target: &T::AccountId) -> T::BlockNumber {
+        if Self::is_validator(who) && *who == *target {
+            Self::validator_bonding_duration()
+        } else {
+            Self::bonding_duration()
+        }
     }
 
     fn apply_unbond(
@@ -859,40 +999,18 @@ impl<T: Trait> Module<T> {
         value: BalanceOf<T>,
     ) -> Result<(), Error<T>> {
         debug!(
-            "[apply_unbond] who:{:?}, target: {:?}, value: {:?}",
+            "[apply_unbond] who:{:?}, target:{:?}, value:{:?}",
             who, target, value
         );
         Self::unbond_reserve(who, value)?;
 
-        let bonding_duration = if Self::is_validator(who) && *who == *target {
-            Self::validator_bonding_duration()
-        } else {
-            Self::bonding_duration()
-        };
-
-        let locked_until = <frame_system::Module<T>>::block_number() + bonding_duration;
-
-        let mut unbonded_chunks = Self::unbonded_chunks_of(who, target);
-
-        if let Some(idx) = unbonded_chunks
-            .iter()
-            .position(|x| x.locked_until == locked_until)
-        {
-            unbonded_chunks[idx].value += value;
-        } else {
-            unbonded_chunks.push(Unbonded {
-                value,
-                locked_until,
-            });
-        }
-
-        Nominations::<T>::mutate(who, target, |nominator_profile| {
-            nominator_profile.unbonded_chunks = unbonded_chunks;
-        });
+        let locked_until =
+            <frame_system::Module<T>>::block_number() + Self::bonding_duration_for(who, target);
+        Self::mutate_unbonded_chunks(who, target, value, locked_until);
 
         Self::update_vote_weight(who, target, Delta::Sub(value));
 
-        Self::deposit_event(RawEvent::Unbond(who.clone(), target.clone(), value));
+        Self::deposit_event(Event::<T>::Unbonded(who.clone(), target.clone(), value));
 
         Ok(())
     }

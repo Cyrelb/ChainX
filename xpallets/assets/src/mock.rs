@@ -1,18 +1,21 @@
 // Copyright 2019-2020 ChainX Project Authors. Licensed under GPL-3.0.
 
-use crate::*;
-use crate::{Module, Trait};
-use chainx_primitives::AssetId;
-use frame_support::{impl_outer_event, impl_outer_origin, parameter_types, sp_io, weights::Weight};
+use std::collections::BTreeMap;
+
 use sp_core::H256;
 use sp_runtime::{
     testing::Header,
     traits::{BlakeTwo256, IdentityLookup},
     Perbill,
 };
-use std::collections::BTreeMap;
 
-pub use xpallet_protocol::X_BTC;
+use frame_support::{impl_outer_event, impl_outer_origin, parameter_types, sp_io, weights::Weight};
+
+use chainx_primitives::AssetId;
+pub use xp_protocol::X_BTC;
+
+use crate::*;
+use crate::{Module, Trait};
 
 /// The AccountId alias in this test module.
 pub(crate) type AccountId = u64;
@@ -73,7 +76,7 @@ impl frame_system::Trait for Test {
     type MaximumBlockLength = MaximumBlockLength;
     type AvailableBlockRatio = AvailableBlockRatio;
     type Version = ();
-    type ModuleToIndex = ();
+    type PalletInfo = ();
     type AccountData = pallet_balances::AccountData<Balance>;
     type OnNewAccount = ();
     type OnKilledAccount = ();
@@ -83,6 +86,7 @@ parameter_types! {
     pub const ExistentialDeposit: u64 = 1;
 }
 impl pallet_balances::Trait for Test {
+    type MaxLocks = ();
     type Balance = Balance;
     type DustRemoval = ();
     type Event = MetaEvent;
@@ -130,7 +134,7 @@ pub(crate) fn btc() -> (AssetId, AssetInfo, AssetRestrictions) {
             b"ChainX's cross-chain Bitcoin".to_vec(),
         )
         .unwrap(),
-        AssetRestriction::DestroyUsable.into(),
+        AssetRestrictions::DESTROY_USABLE,
     )
 }
 

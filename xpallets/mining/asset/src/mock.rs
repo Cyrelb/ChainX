@@ -1,8 +1,10 @@
 // Copyright 2019-2020 ChainX Project Authors. Licensed under GPL-3.0.
 
-use crate::*;
-use crate::{Module, Trait};
-use chainx_primitives::AssetId;
+use std::{
+    cell::RefCell,
+    collections::{BTreeMap, HashSet},
+};
+
 use frame_support::{
     impl_outer_event, impl_outer_origin, parameter_types, traits::Get, weights::Weight,
 };
@@ -12,12 +14,13 @@ use sp_runtime::{
     traits::{BlakeTwo256, IdentityLookup},
     Perbill,
 };
-use std::{
-    cell::RefCell,
-    collections::{BTreeMap, HashSet},
-};
+
+use chainx_primitives::AssetId;
 use xp_mining_staking::SessionIndex;
 use xpallet_assets::{AssetInfo, AssetRestrictions, Chain};
+
+use crate::*;
+use crate::{Module, Trait};
 
 pub const INIT_TIMESTAMP: u64 = 30_000;
 
@@ -89,7 +92,7 @@ impl frame_system::Trait for Test {
     type MaximumBlockLength = MaximumBlockLength;
     type AvailableBlockRatio = AvailableBlockRatio;
     type Version = ();
-    type ModuleToIndex = ();
+    type PalletInfo = ();
     type AccountData = pallet_balances::AccountData<Balance>;
     type OnNewAccount = ();
     type OnKilledAccount = ();
@@ -115,6 +118,7 @@ impl Get<Balance> for ExistentialDeposit {
 }
 
 impl pallet_balances::Trait for Test {
+    type MaxLocks = ();
     type Balance = Balance;
     type Event = MetaEvent;
     type DustRemoval = ();
@@ -176,7 +180,7 @@ impl pallet_session::OneSessionHandler<AccountId> for OtherSessionHandler {
 
 pub(crate) fn btc() -> (AssetId, AssetInfo, AssetRestrictions) {
     (
-        xpallet_protocol::X_BTC,
+        xp_protocol::X_BTC,
         AssetInfo::new::<Test>(
             b"X-BTC".to_vec(),
             b"X-BTC".to_vec(),
@@ -185,7 +189,7 @@ pub(crate) fn btc() -> (AssetId, AssetInfo, AssetRestrictions) {
             b"ChainX's cross-chain Bitcoin".to_vec(),
         )
         .unwrap(),
-        AssetRestrictions::none(),
+        AssetRestrictions::empty(),
     )
 }
 
@@ -239,6 +243,8 @@ impl xpallet_support::traits::TreasuryAccount<AccountId> for DummyTreasuryAccoun
 parameter_types! {
     pub const SessionDuration: BlockNumber = 50;
     pub const MigrationSessionOffset: u32 = 500;
+    pub const MinimumReferralId: u32 = 2;
+    pub const MaximumReferralId: u32 = 12;
 }
 
 pub struct DummyStakingRewardPotAccountDeterminer;
@@ -257,6 +263,8 @@ impl xpallet_mining_staking::Trait for Test {
     type AssetMining = XMiningAsset;
     type MigrationSessionOffset = MigrationSessionOffset;
     type SessionDuration = SessionDuration;
+    type MinimumReferralId = MinimumReferralId;
+    type MaximumReferralId = MaximumReferralId;
     type SessionInterface = Self;
     type TreasuryAccount = DummyTreasuryAccount;
     type DetermineRewardPotAccount = DummyStakingRewardPotAccountDeterminer;
@@ -355,7 +363,6 @@ impl ExtBuilder {
             vesting_account: VESTING_ACCOUNT,
             glob_dist_ratio: (12, 88),
             mining_ratio: (10, 90),
-            offence_severity: 2,
             ..Default::default()
         }
         .assimilate_storage(&mut storage);
@@ -377,8 +384,8 @@ impl ExtBuilder {
         .assimilate_storage(&mut storage);
 
         let _ = GenesisConfig::<Test> {
-            claim_restrictions: vec![(xpallet_protocol::X_BTC, (7, 3))],
-            mining_power_map: vec![(xpallet_protocol::X_BTC, 400)],
+            claim_restrictions: vec![(xp_protocol::X_BTC, (7, 3))],
+            mining_power_map: vec![(xp_protocol::X_BTC, 400)],
         }
         .assimilate_storage(&mut storage);
 

@@ -7,10 +7,9 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 #![allow(clippy::new_without_default, clippy::type_complexity)]
 
-mod brenchmarks;
+mod benchmarks;
 
 mod binding;
-pub mod extractor;
 pub mod traits;
 pub mod trustees;
 pub mod types;
@@ -23,20 +22,16 @@ use sp_std::{collections::btree_map::BTreeMap, convert::TryFrom, prelude::*, res
 use frame_support::{
     decl_error, decl_event, decl_module, decl_storage,
     dispatch::{DispatchError, DispatchResult},
-    ensure,
-    traits::Currency,
-    IterableStorageMap,
+    ensure, IterableStorageMap,
 };
 use frame_system::{ensure_root, ensure_signed};
 
 use chainx_primitives::{AddrStr, AssetId, ChainAddress, Text};
+use xp_logging::{error, info};
 use xp_runtime::Memo;
-use xpallet_assets::{AssetRestriction, Chain, ChainT, WithdrawalLimit};
+use xpallet_assets::{AssetRestrictions, BalanceOf, Chain, ChainT, WithdrawalLimit};
 use xpallet_gateway_records::WithdrawalState;
-use xpallet_support::{
-    error, info,
-    traits::{MultisigAddressFor, Validator},
-};
+use xpallet_support::traits::{MultisigAddressFor, Validator};
 
 use crate::traits::TrusteeForChain;
 use crate::types::{
@@ -45,32 +40,35 @@ use crate::types::{
 };
 use crate::weight_info::WeightInfo;
 
-pub type BalanceOf<T> = <<T as xpallet_assets::Trait>::Currency as Currency<
-    <T as frame_system::Trait>::AccountId,
->>::Balance;
-
-pub trait Trait: frame_system::Trait + xpallet_gateway_records::Trait {
+pub trait Trait: xpallet_gateway_records::Trait {
     type Event: From<Event<Self>> + Into<<Self as frame_system::Trait>::Event>;
 
     type Validator: Validator<Self::AccountId>;
+
     type DetermineMultisigAddress: MultisigAddressFor<Self::AccountId>;
+
     // for chain
     type Bitcoin: ChainT<BalanceOf<Self>>;
+
     type BitcoinTrustee: TrusteeForChain<
         Self::AccountId,
         trustees::bitcoin::BtcTrusteeType,
         trustees::bitcoin::BtcTrusteeAddrInfo,
     >;
+
     type WeightInfo: WeightInfo;
 }
 
 decl_event!(
     pub enum Event<T> where
         <T as frame_system::Trait>::AccountId,
-        GenericTrusteeSessionInfo = GenericTrusteeSessionInfo<<T as frame_system::Trait>::AccountId> {
+    {
+        /// A (potential) trustee set the required properties. [who, chain, trustee_props]
         SetTrusteeProps(AccountId, Chain, GenericTrusteeIntentionProps),
-        NewTrustees(Chain, u32, GenericTrusteeSessionInfo),
-        ChannelBinding(Chain, AccountId, AccountId),
+        /// An account set its referral_account of some chain. [who, chain, referral_account]
+        ReferralBinded(AccountId, Chain, AccountId),
+        /// The trustee set of a chain was changed. [chain, session_number, session_info]
+        TrusteeSetChanged(Chain, u32, GenericTrusteeSessionInfo<AccountId>),
     }
 );
 
@@ -103,6 +101,9 @@ decl_module! {
         type Error = Error<T>;
         fn deposit_event() = default;
 
+        /// Withdraws some balances of `asset_id` to address `addr` of target chain.
+        ///
+        /// NOTE: `ext` is for the compatiblity purpose, e.g., EOS requires a memo when doing the transfer.
         #[weight = <T as Trait>::WeightInfo::withdraw()]
         pub fn withdraw(
             origin,
@@ -112,7 +113,15 @@ decl_module! {
             ext: Memo
         ) -> DispatchResult {
             let who = ensure_signed(origin)?;
-            Self::apply_withdraw(who, asset_id, value, addr, ext)
+
+            ensure!(
+                xpallet_assets::Module::<T>::can_do(&asset_id, AssetRestrictions::WITHDRAW),
+                xpallet_assets::Error::<T>::ActionNotAllowed,
+            );
+            Self::verify_withdrawal(asset_id, value, &addr, &ext)?;
+
+            xpallet_gateway_records::Module::<T>::withdraw(&who, asset_id, value, addr, ext)?;
+            Ok(())
         }
 
         #[weight = <T as Trait>::WeightInfo::withdraw()]
@@ -154,7 +163,7 @@ decl_module! {
             };
 
             info!(
-                "[transition_trustee_session_by_root]|try to transition trustee|chain:{:?}|new_trustees:{:?}",
+                "[transition_trustee_session_by_root] Try to transition trustees, chain:{:?}, new_trustees:{:?}",
                 chain,
                 new_trustees
             );
@@ -190,12 +199,12 @@ decl_module! {
             origin,
             chain: Chain,
             who: <T::Lookup as StaticLookup>::Source,
-            binded: <T::Lookup as StaticLookup>::Source
+            referral: <T::Lookup as StaticLookup>::Source
         ) -> DispatchResult {
             ensure_root(origin)?;
             let who = T::Lookup::lookup(who)?;
-            let binded = T::Lookup::lookup(binded)?;
-            Self::set_binding(chain, who, binded);
+            let referral = T::Lookup::lookup(referral)?;
+            Self::set_referral_binding(chain, who, referral);
             Ok(())
         }
     }
@@ -258,24 +267,6 @@ decl_storage! {
 
 // withdraw
 impl<T: Trait> Module<T> {
-    fn apply_withdraw(
-        who: T::AccountId,
-        asset_id: AssetId,
-        value: BalanceOf<T>,
-        addr: AddrStr,
-        ext: Memo,
-    ) -> DispatchResult {
-        ensure!(
-            xpallet_assets::Module::<T>::can_do(&asset_id, AssetRestriction::Withdraw),
-            xpallet_assets::Error::<T>::ActionNotAllowed,
-        );
-
-        Self::verify_withdrawal(asset_id, value, &addr, &ext)?;
-
-        xpallet_gateway_records::Module::<T>::withdraw(&who, asset_id, value, addr, ext)?;
-        Ok(())
-    }
-
     pub fn withdrawal_limit(
         asset_id: &AssetId,
     ) -> result::Result<WithdrawalLimit<BalanceOf<T>>, DispatchError> {
@@ -349,7 +340,7 @@ impl<T: Trait> Module<T> {
         });
 
         TrusteeIntentionPropertiesOf::<T>::insert(&who, chain, props.clone());
-        Self::deposit_event(RawEvent::SetTrusteeProps(who, chain, props));
+        Self::deposit_event(Event::<T>::SetTrusteeProps(who, chain, props));
         Ok(())
     }
 
@@ -362,7 +353,7 @@ impl<T: Trait> Module<T> {
             (1..new_trustees.len()).any(|i| new_trustees[i..].contains(&new_trustees[i - 1]));
         if has_duplicate {
             error!(
-                "[try_generate_session_info]|existing duplicate account|candidates:{:?}",
+                "[try_generate_session_info] Duplicate account, candidates:{:?}",
                 new_trustees
             );
             return Err(Error::<T>::DuplicatedAccountId.into());
@@ -370,7 +361,10 @@ impl<T: Trait> Module<T> {
         let mut props = Vec::with_capacity(new_trustees.len());
         for accountid in new_trustees.into_iter() {
             let p = Self::trustee_intention_props_of(&accountid, chain).ok_or_else(|| {
-                error!("[transition_trustee_session]|some candidate has not registered as a trustee|who:{:?}",  accountid);
+                error!(
+                    "[transition_trustee_session] Candidate {:?} has not registered as a trustee",
+                    accountid
+                );
                 Error::<T>::NotRegistered
             })?;
             props.push((accountid, p));
@@ -387,11 +381,8 @@ impl<T: Trait> Module<T> {
                         )
                     })
                     .collect();
-                let mut session_info =
-                    T::BitcoinTrustee::generate_trustee_session_info(props, config)?;
+                let session_info = T::BitcoinTrustee::generate_trustee_session_info(props, config)?;
 
-                // sort account list to make sure generate a stable multisig addr(addr is related with accounts sequence)
-                session_info.trustee_list.sort();
                 session_info.into()
             }
             _ => return Err(Error::<T>::NotSupportedChain.into()),
@@ -407,15 +398,14 @@ impl<T: Trait> Module<T> {
         let multi_addr = Self::generate_multisig_addr(chain, &info)?;
 
         let session_number = Self::trustee_session_info_len(chain);
-        let next_number = match session_number.checked_add(1) {
-            Some(n) => n,
-            None => 0_u32,
-        };
+        // FIXME: rethink about the overflow case.
+        let next_number = session_number.checked_add(1).unwrap_or(0u32);
 
         TrusteeSessionInfoLen::insert(chain, next_number);
-        TrusteeSessionInfoOf::<T>::insert(chain, session_number, info);
-
+        TrusteeSessionInfoOf::<T>::insert(chain, session_number, info.clone());
         TrusteeMultiSigAddr::<T>::insert(chain, multi_addr);
+
+        Self::deposit_event(Event::<T>::TrusteeSetChanged(chain, session_number, info));
         Ok(())
     }
 
@@ -437,10 +427,9 @@ impl<T: Trait> Module<T> {
         Ok(multi_addr)
     }
 
-    fn set_binding(chain: Chain, who: T::AccountId, binded: T::AccountId) {
-        ChannelBindingOf::<T>::insert(&who, &chain, binded.clone());
-
-        Self::deposit_event(RawEvent::ChannelBinding(chain, who, binded))
+    fn set_referral_binding(chain: Chain, who: T::AccountId, referral: T::AccountId) {
+        ChannelBindingOf::<T>::insert(&who, &chain, referral.clone());
+        Self::deposit_event(Event::<T>::ReferralBinded(who, chain, referral))
     }
 }
 

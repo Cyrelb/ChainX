@@ -1,12 +1,12 @@
 // Copyright 2019-2020 ChainX Project Authors. Licensed under GPL-3.0.
 
-pub use crate::mock::*;
-use crate::*;
-
 use frame_support::{assert_noop, assert_ok};
 use frame_system::{EventRecord, Phase};
 
-use xpallet_protocol::X_BTC;
+use xp_protocol::X_BTC;
+
+pub use crate::mock::*;
+use crate::*;
 
 #[test]
 fn test_genesis() {
@@ -22,7 +22,7 @@ fn test_genesis() {
             b"abc".to_vec(),
         )
         .unwrap(),
-        AssetRestriction::DestroyUsable.into(),
+        AssetRestrictions::DESTROY_USABLE,
     );
 
     let efd_assets = (
@@ -35,7 +35,7 @@ fn test_genesis() {
             b"efd".to_vec(),
         )
         .unwrap(),
-        AssetRestriction::Transfer | AssetRestriction::DestroyUsable,
+        AssetRestrictions::TRANSFER | AssetRestrictions::DESTROY_USABLE,
     );
 
     let mut endowed = BTreeMap::new();
@@ -371,7 +371,7 @@ fn test_balance_btree_map() {
             &a,
             AssetType::Usable,
             &a,
-            AssetType::ReservedXRC20,
+            AssetType::ReservedWithdrawal,
             30,
         );
         assert_eq!(AssetBalance::<Test>::get(&a, &btc_id).len(), 2);
@@ -380,7 +380,7 @@ fn test_balance_btree_map() {
         let _ = XAssets::move_balance(
             &X_BTC,
             &a,
-            AssetType::ReservedXRC20,
+            AssetType::ReservedWithdrawal,
             &a,
             AssetType::Usable,
             10,
@@ -388,7 +388,7 @@ fn test_balance_btree_map() {
         let _ = XAssets::move_balance(
             &X_BTC,
             &a,
-            AssetType::ReservedXRC20,
+            AssetType::ReservedWithdrawal,
             &b,
             AssetType::Usable,
             20,

@@ -36,8 +36,8 @@ use frame_support::{
 use frame_system::{ensure_root, ensure_signed};
 
 use chainx_primitives::AssetId;
+use xp_logging::info;
 use xpallet_assets::AssetErr;
-use xpallet_support::info;
 
 pub use rpc::*;
 pub use types::*;
@@ -157,21 +157,21 @@ decl_event!(
         <T as frame_system::Trait>::BlockNumber,
         <T as Trait>::Price,
     {
-        /// A new order is created.
+        /// A new order was created. [order_info]
         NewOrder(Order<TradingPairId, AccountId, Balance, Price, BlockNumber>),
-        /// There is an update to the order due to it gets executed.
+        /// There was an update to the order due to it gets executed. [maker_order_info]
         MakerOrderUpdated(Order<TradingPairId, AccountId, Balance, Price, BlockNumber>),
-        /// There is an update to the order due to it gets executed.
+        /// There was an update to the order due to it gets executed. [taker_order_info]
         TakerOrderUpdated(Order<TradingPairId, AccountId, Balance, Price, BlockNumber>),
-        /// Overall information about the maker and taker orders when there is an order execution.
+        /// Overall information about the maker and taker orders when there was an order execution. [order_executed_info]
         OrderExecuted(OrderExecutedInfo<AccountId, Balance, BlockNumber, Price>),
-        /// There is an update to the order due to it gets canceled.
+        /// There is an update to the order due to it gets canceled. [order_info]
         CanceledOrderUpdated(Order<TradingPairId, AccountId, Balance, Price, BlockNumber>),
-        /// A new trading pair is added.
+        /// A new trading pair is added. [pair_profile]
         TradingPairAdded(TradingPairProfile),
-        /// Trading pair profile has been updated.
+        /// Trading pair profile has been updated. [pair_profile]
         TradingPairUpdated(TradingPairProfile),
-        /// Price fluctuation of trading pair has been updated.
+        /// Price fluctuation of trading pair has been updated. [pair_id, price_fluctuation]
         PriceFluctuationUpdated(TradingPairId, PriceFluctuation),
     }
 );
@@ -289,7 +289,7 @@ decl_module! {
         #[weight = <T as Trait>::WeightInfo::set_handicap()]
         fn set_handicap(origin, #[compact] pair_id: TradingPairId, new: Handicap< T::Price>) {
             ensure_root(origin)?;
-            info!("[set_handicap]pair_id:{:?},new handicap:{:?}", pair_id, new);
+            info!("[set_handicap] pair_id:{:?}, new handicap:{:?}", pair_id, new);
             HandicapOf::<T>::insert(pair_id, new);
         }
 
@@ -301,7 +301,7 @@ decl_module! {
         ) {
             ensure_root(origin)?;
             PriceFluctuationOf::insert(pair_id, new);
-            Self::deposit_event(RawEvent::PriceFluctuationUpdated(pair_id, new));
+            Self::deposit_event(Event::<T>::PriceFluctuationUpdated(pair_id, new));
         }
 
         /// Add a new trading pair.
@@ -340,7 +340,7 @@ decl_module! {
             let pair = Self::trading_pair(pair_id)?;
             ensure!(tick_decimals >= pair.tick_decimals, Error::<T>::InvalidTickdecimals);
             Self::apply_update_trading_pair(pair_id, tick_decimals, tradable);
-            Self::deposit_event(RawEvent::TradingPairUpdated(pair));
+            Self::deposit_event(Event::<T>::TradingPairUpdated(pair));
         }
     }
 }
@@ -388,7 +388,7 @@ impl<T: Trait> Module<T> {
             tradable,
         };
 
-        info!("new trading pair: {:?}", pair);
+        info!("New trading pair: {:?}", pair);
 
         TradingPairOf::insert(pair_id, &pair);
         TradingPairInfoOf::<T>::insert(
@@ -401,12 +401,12 @@ impl<T: Trait> Module<T> {
 
         TradingPairCount::put(pair_id + 1);
 
-        Self::deposit_event(RawEvent::TradingPairAdded(pair));
+        Self::deposit_event(Event::<T>::TradingPairAdded(pair));
     }
 
     fn apply_update_trading_pair(pair_id: TradingPairId, tick_decimals: u32, tradable: bool) {
         info!(
-            "[update_trading_pair]pair_id: {:}, tick_decimals: {:}, tradable:{:}",
+            "[update_trading_pair] pair_id: {:}, tick_decimals: {:}, tradable:{:}",
             pair_id, tick_decimals, tradable
         );
         TradingPairOf::mutate(pair_id, |pair| {
@@ -473,7 +473,7 @@ impl<T: Trait> Module<T> {
         order_id: OrderId,
     ) -> DispatchResult {
         info!(
-            "[apply_cancel_order]who:{:?}, pair_id:{}, order_id:{}",
+            "[apply_cancel_order] who:{:?}, pair_id:{}, order_id:{}",
             who, pair_id, order_id
         );
 
@@ -503,7 +503,7 @@ impl<T: Trait> xpallet_assets_registrar::RegistrarHandler for Module<T> {
                 if pair.base().eq(token) || pair.quote().eq(token) {
                     pair.tradable = false;
                     TradingPairOf::insert(i, &pair);
-                    Self::deposit_event(RawEvent::TradingPairUpdated(pair));
+                    Self::deposit_event(Event::<T>::TradingPairUpdated(pair));
                 }
             }
         }

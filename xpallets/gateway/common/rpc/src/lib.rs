@@ -4,15 +4,21 @@
 
 use std::collections::BTreeMap;
 use std::convert::TryFrom;
+use std::fmt::Display;
+use std::str::FromStr;
 use std::sync::Arc;
 
 use codec::Codec;
-use jsonrpc_core::{Error as RpcError, ErrorCode, Result};
 use jsonrpc_derive::rpc;
 
 use sp_api::ProvideRuntimeApi;
 use sp_blockchain::HeaderBackend;
 use sp_runtime::{generic::BlockId, traits::Block as BlockT};
+
+use xp_rpc::{
+    hex_decode_error_into_rpc_err, runtime_error_into_rpc_err, trustee_decode_error_into_rpc_err,
+    trustee_inexistent_rpc_err, Result, RpcBalance,
+};
 
 use xpallet_gateway_common_rpc_runtime_api::trustees::bitcoin::{
     BtcTrusteeIntentionProps, BtcTrusteeSessionInfo,
@@ -24,7 +30,10 @@ use xpallet_gateway_common_rpc_runtime_api::{
 
 /// XGatewayCommon RPC methods.
 #[rpc]
-pub trait XGatewayCommonApi<BlockHash, AccountId, Balance> {
+pub trait XGatewayCommonApi<BlockHash, AccountId, Balance>
+where
+    Balance: Display + FromStr,
+{
     /// Get bound addrs for an accountid
     #[rpc(name = "xgatewaycommon_boundAddrs")]
     fn bound_addrs(
@@ -39,7 +48,7 @@ pub trait XGatewayCommonApi<BlockHash, AccountId, Balance> {
         &self,
         asset_id: AssetId,
         at: Option<BlockHash>,
-    ) -> Result<WithdrawalLimit<Balance>>;
+    ) -> Result<WithdrawalLimit<RpcBalance<Balance>>>;
 
     /// Use the params to verify whether the withdrawal apply is valid. Notice those params is same as the params for call `XGatewayCommon::withdraw(...)`, including checking address is valid or something else. Front-end should use this rpc to check params first, than could create the extrinsic.
     #[rpc(name = "xgatewaycommon_verifyWithdrawal")]
@@ -50,7 +59,7 @@ pub trait XGatewayCommonApi<BlockHash, AccountId, Balance> {
         addr: String,
         memo: String,
         at: Option<BlockHash>,
-    ) -> Result<()>;
+    ) -> Result<bool>;
 
     /// Return the trustee multisig address for all chain.
     #[rpc(name = "xgatewaycommon_trusteeMultisigs")]
@@ -115,12 +124,8 @@ where
 
         let result = api
             .trustee_properties(&at, chain, who)
-            .map_err(runtime_error_into_rpc_err)?;
-        let result = result.ok_or(RpcError {
-            code: ErrorCode::ServerError(RUNTIME_ERROR + 1),
-            message: "Not exist".into(),
-            data: None,
-        })?;
+            .map_err(runtime_error_into_rpc_err)?
+            .ok_or(trustee_inexistent_rpc_err())?;
 
         Ok(result)
     }
@@ -135,12 +140,8 @@ where
 
         let result = api
             .trustee_session_info(&at, chain)
-            .map_err(runtime_error_into_rpc_err)?;
-        let result = result.ok_or(RpcError {
-            code: ErrorCode::ServerError(RUNTIME_ERROR + 1),
-            message: "Not exist".into(),
-            data: None,
-        })?;
+            .map_err(runtime_error_into_rpc_err)?
+            .ok_or(trustee_inexistent_rpc_err())?;
 
         Ok(result)
     }
@@ -156,8 +157,8 @@ where
 
         let result = api
             .generate_trustee_session_info(&at, chain, candidates)
+            .map_err(runtime_error_into_rpc_err)?
             .map_err(runtime_error_into_rpc_err)?;
-        let result = result.map_err(runtime_error_into_rpc_err)?;
 
         Ok(result)
     }
@@ -170,7 +171,7 @@ where
     C: Send + Sync + 'static + ProvideRuntimeApi<Block> + HeaderBackend<Block>,
     C::Api: XGatewayCommonRuntimeApi<Block, AccountId, Balance>,
     AccountId: Codec + Send + Sync + 'static,
-    Balance: Codec + Send + Sync + 'static + From<u64>,
+    Balance: Codec + Display + FromStr + Send + Sync + 'static + From<u64>,
 {
     fn bound_addrs(
         &self,
@@ -208,7 +209,7 @@ where
         &self,
         asset_id: AssetId,
         at: Option<<Block as BlockT>::Hash>,
-    ) -> Result<WithdrawalLimit<Balance>> {
+    ) -> Result<WithdrawalLimit<RpcBalance<Balance>>> {
         let api = self.client.runtime_api();
         let at = BlockId::hash(at.unwrap_or_else(||
             // If the block hash is not supplied assume the best block.
@@ -218,8 +219,8 @@ where
             .withdrawal_limit(&at, asset_id)
             .map_err(runtime_error_into_rpc_err)?
             .map(|src| WithdrawalLimit {
-                minimal_withdrawal: src.minimal_withdrawal,
-                fee: src.fee,
+                minimal_withdrawal: src.minimal_withdrawal.into(),
+                fee: src.fee.into(),
             })
             .map_err(runtime_error_into_rpc_err)?;
         Ok(result)
@@ -232,14 +233,10 @@ where
         addr: String,
         memo: String,
         at: Option<<Block as BlockT>::Hash>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let value: Balance = Balance::from(value);
         let addr = if addr.starts_with("0x") {
-            hex::decode(&addr[2..]).map_err(|err| RpcError {
-                code: ErrorCode::ServerError(RUNTIME_ERROR + 10),
-                message: "Decode to hex error".into(),
-                data: Some(format!("{:?}", err).into()),
-            })?
+            hex::decode(&addr[2..]).map_err(hex_decode_error_into_rpc_err)?
         } else {
             hex::decode(&addr).unwrap_or_else(|_| addr.into_bytes())
         };
@@ -249,10 +246,10 @@ where
         let at = BlockId::hash(at.unwrap_or_else(||
             // If the block hash is not supplied assume the best block.
             self.client.info().best_hash));
-        api.verify_withdrawal(&at, asset_id, value, addr, memo.into())
+        Ok(api
+            .verify_withdrawal(&at, asset_id, value, addr, memo.into())
             .map_err(runtime_error_into_rpc_err)?
-            .map_err(runtime_error_into_rpc_err)?;
-        Ok(())
+            .is_ok())
     }
 
     fn multisigs(&self, at: Option<<Block as BlockT>::Hash>) -> Result<BTreeMap<Chain, AccountId>> {
@@ -274,11 +271,7 @@ where
         at: Option<<Block as BlockT>::Hash>,
     ) -> Result<BtcTrusteeIntentionProps> {
         let props = self.generic_trustee_properties(Chain::Bitcoin, who, at)?;
-        BtcTrusteeIntentionProps::try_from(props).map_err(|_| RpcError {
-            code: ErrorCode::ServerError(RUNTIME_ERROR + 2),
-            message: "Decode generic data error, should not happen".into(),
-            data: None,
-        })
+        BtcTrusteeIntentionProps::try_from(props).map_err(trustee_decode_error_into_rpc_err)
     }
 
     fn btc_trustee_session_info(
@@ -286,11 +279,7 @@ where
         at: Option<<Block as BlockT>::Hash>,
     ) -> Result<BtcTrusteeSessionInfo<AccountId>> {
         let info = self.generic_trustee_session_info(Chain::Bitcoin, at)?;
-        BtcTrusteeSessionInfo::<_>::try_from(info).map_err(|_| RpcError {
-            code: ErrorCode::ServerError(RUNTIME_ERROR + 2),
-            message: "Decode generic data error, should not happen".into(),
-            data: None,
-        })
+        BtcTrusteeSessionInfo::<_>::try_from(info).map_err(trustee_decode_error_into_rpc_err)
     }
 
     fn btc_generate_trustee_session_info(
@@ -299,21 +288,6 @@ where
         at: Option<<Block as BlockT>::Hash>,
     ) -> Result<BtcTrusteeSessionInfo<AccountId>> {
         let info = self.generate_generic_trustee_session_info(Chain::Bitcoin, candidates, at)?;
-        BtcTrusteeSessionInfo::<_>::try_from(info).map_err(|_| RpcError {
-            code: ErrorCode::ServerError(RUNTIME_ERROR + 2),
-            message: "Decode generic data error, should not happen".into(),
-            data: None,
-        })
-    }
-}
-
-const RUNTIME_ERROR: i64 = 1;
-
-/// Converts a runtime trap into an RPC error.
-fn runtime_error_into_rpc_err(err: impl std::fmt::Debug) -> RpcError {
-    RpcError {
-        code: ErrorCode::ServerError(RUNTIME_ERROR),
-        message: "Runtime trapped".into(),
-        data: Some(format!("{:?}", err).into()),
+        BtcTrusteeSessionInfo::<_>::try_from(info).map_err(trustee_decode_error_into_rpc_err)
     }
 }

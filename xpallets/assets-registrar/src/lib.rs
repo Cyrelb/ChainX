@@ -28,11 +28,11 @@ use frame_support::{
 use frame_system::ensure_root;
 
 use chainx_primitives::{AssetId, Desc, Token};
-use xpallet_support::info;
+use xp_logging::info;
 
-pub use self::types::{AssetInfo, Chain};
+pub use self::types::AssetInfo;
 pub use self::weight_info::WeightInfo;
-pub use xp_assets_registrar::RegistrarHandler;
+pub use xp_assets_registrar::{Chain, RegistrarHandler};
 
 /// The module's config trait.
 ///
@@ -54,12 +54,12 @@ pub trait Trait: frame_system::Trait {
 decl_event!(
     /// Event for the XAssetRegistrar Module
     pub enum Event {
-        /// A new asset is registered. [asset_id, has_mining_rights]
-        Register(AssetId, bool),
-        /// A deregistered asset is recovered. [asset_id, has_mining_rights]
-        Recover(AssetId, bool),
-        /// An asset is invalid now. [asset_id]
-        Deregister(AssetId),
+        /// A new asset was registered. [asset_id, has_mining_rights]
+        Registered(AssetId, bool),
+        /// A deregistered asset was recovered. [asset_id, has_mining_rights]
+        Recovered(AssetId, bool),
+        /// An asset was deregistered. [asset_id]
+        Deregistered(AssetId),
     }
 );
 
@@ -96,7 +96,7 @@ decl_storage! {
         pub AssetInfoOf get(fn asset_info_of): map hasher(twox_64_concat) AssetId => Option<AssetInfo>;
 
         /// The map of asset to the online state.
-        pub AssetOnline get(fn asset_online): map hasher(twox_64_concat) AssetId => Option<()>;
+        pub AssetOnline get(fn asset_online): map hasher(twox_64_concat) AssetId => bool;
 
         /// The map of asset to the block number at which the asset was registered.
         pub RegisteredAt get(fn registered_at): map hasher(twox_64_concat) AssetId => T::BlockNumber;
@@ -140,12 +140,15 @@ decl_module! {
             asset.is_valid::<T>()?;
             ensure!(!Self::exists(&asset_id), Error::<T>::AssetAlreadyExists);
 
-            info!("[register_asset]|id:{:}|{:?}|is_online:{:}|has_mining_rights:{:}", asset_id, asset, is_online, has_mining_rights);
+            info!(
+                "[register_asset] id:{}, info:{:?}, is_online:{}, has_mining_rights:{}",
+                asset_id, asset, is_online, has_mining_rights
+            );
 
             Self::apply_register(asset_id, asset)?;
 
+            Self::deposit_event(Event::Registered(asset_id, has_mining_rights));
             T::RegistrarHandler::on_register(&asset_id, has_mining_rights)?;
-            Self::deposit_event(Event::Register(asset_id, has_mining_rights));
 
             if !is_online {
                 let _ = Self::deregister(frame_system::RawOrigin::Root.into(), asset_id);
@@ -166,9 +169,9 @@ decl_module! {
             ensure!(Self::is_valid(&id), Error::<T>::AssetIsInvalid);
 
             AssetOnline::remove(id);
-            T::RegistrarHandler::on_deregister(&id)?;
 
-            Self::deposit_event(Event::Deregister(id));
+            Self::deposit_event(Event::Deregistered(id));
+            T::RegistrarHandler::on_deregister(&id)?;
 
             Ok(())
         }
@@ -185,10 +188,10 @@ decl_module! {
             ensure!(Self::exists(&id), Error::<T>::AssetDoesNotExist);
             ensure!(!Self::is_valid(&id), Error::<T>::AssetAlreadyValid);
 
-            AssetOnline::insert(id, ());
+            AssetOnline::insert(id, true);
 
+            Self::deposit_event(Event::Recovered(id, has_mining_rights));
             T::RegistrarHandler::on_register(&id, has_mining_rights)?;
-            Self::deposit_event(Event::Recover(id, has_mining_rights));
             Ok(())
         }
 
@@ -268,7 +271,7 @@ impl<T: Trait> Module<T> {
 
     /// Returns true if the given `asset_id` is an online asset.
     pub fn is_online(asset_id: &AssetId) -> bool {
-        Self::asset_online(asset_id).is_some()
+        Self::asset_online(asset_id)
     }
 
     /// Returns true if the asset info record of given `asset_id` exists.
@@ -303,7 +306,7 @@ impl<T: Trait> Module<T> {
         });
 
         AssetInfoOf::insert(&id, asset);
-        AssetOnline::insert(&id, ());
+        AssetOnline::insert(&id, true);
 
         RegisteredAt::<T>::insert(&id, frame_system::Module::<T>::block_number());
 

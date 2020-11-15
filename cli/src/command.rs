@@ -5,7 +5,7 @@ use sc_service::PartialComponents;
 
 use crate::chain_spec;
 use crate::cli::{Cli, Subcommand};
-use crate::service::{self, new_partial};
+use crate::service::{self, new_full_base, new_partial, NewFullBase};
 
 impl SubstrateCli for Cli {
     fn impl_name() -> String {
@@ -17,7 +17,7 @@ impl SubstrateCli for Cli {
     }
 
     fn executable_name() -> String {
-        env!("CARGO_PKG_NAME").into()
+        "chainx".into()
     }
 
     fn description() -> String {
@@ -29,11 +29,11 @@ impl SubstrateCli for Cli {
     }
 
     fn support_url() -> String {
-        "https://github.com/chainx-org/ChainX".into()
+        "https://github.com/chainx-org/ChainX/issues/new".into()
     }
 
     fn copyright_start_year() -> i32 {
-        2020
+        2019
     }
 
     fn load_spec(&self, id: &str) -> Result<Box<dyn sc_service::ChainSpec>, String> {
@@ -48,7 +48,9 @@ impl SubstrateCli for Cli {
 
 fn load_spec(id: &str) -> Result<Box<dyn sc_service::ChainSpec>, String> {
     Ok(match id {
-        "" | "mainnet" => unimplemented!("not impl mainnet config yet."),
+        "" | "mainnet" => {
+            return Err("mainnet is not ready, please use --chain=testnet".into());
+        }
         "dev" => Box::new(chain_spec::development_config()?),
         "local" => Box::new(chain_spec::local_testnet_config()?),
         "staging" => Box::new(chain_spec::staging_testnet_config()?),
@@ -119,20 +121,104 @@ pub fn run() -> sc_cli::Result<()> {
         Some(Subcommand::Sign(cmd)) => cmd.run(),
         Some(Subcommand::Verify(cmd)) => cmd.run(),
         Some(Subcommand::Vanity(cmd)) => cmd.run(),
-        Some(Subcommand::Base(subcommand)) => {
-            let runner = cli.create_runner(subcommand)?;
-            let chain_spec = &runner.config().chain_spec;
-            set_default_ss58_version(chain_spec);
+        Some(Subcommand::BuildSpec(cmd)) => {
+            let runner = cli.create_runner(cmd)?;
+            set_default_ss58_version(&runner.config().chain_spec);
 
-            runner.run_subcommand(subcommand, |config| {
+            runner.sync_run(|config| cmd.run(config.chain_spec, config.network))
+        }
+        Some(Subcommand::BuildSyncSpec(cmd)) => {
+            let runner = cli.create_runner(cmd)?;
+            set_default_ss58_version(&runner.config().chain_spec);
+
+            runner.async_run(|config| {
+                let chain_spec = config.chain_spec.cloned_box();
+                let network_config = config.network.clone();
+                let NewFullBase {
+                    task_manager,
+                    client,
+                    network_status_sinks,
+                    ..
+                } = new_full_base(config)?;
+
+                Ok((
+                    cmd.run(chain_spec, network_config, client, network_status_sinks),
+                    task_manager,
+                ))
+            })
+        }
+        Some(Subcommand::CheckBlock(cmd)) => {
+            let runner = cli.create_runner(cmd)?;
+            set_default_ss58_version(&runner.config().chain_spec);
+
+            runner.async_run(|config| {
                 let PartialComponents {
                     client,
-                    backend,
                     task_manager,
                     import_queue,
                     ..
                 } = new_partial(&config)?;
-                Ok((client, backend, import_queue, task_manager))
+                Ok((cmd.run(client, import_queue), task_manager))
+            })
+        }
+        Some(Subcommand::ExportBlocks(cmd)) => {
+            let runner = cli.create_runner(cmd)?;
+            set_default_ss58_version(&runner.config().chain_spec);
+
+            runner.async_run(|config| {
+                let PartialComponents {
+                    client,
+                    task_manager,
+                    ..
+                } = new_partial(&config)?;
+                Ok((cmd.run(client, config.database), task_manager))
+            })
+        }
+        Some(Subcommand::ExportState(cmd)) => {
+            let runner = cli.create_runner(cmd)?;
+            set_default_ss58_version(&runner.config().chain_spec);
+
+            runner.async_run(|config| {
+                let PartialComponents {
+                    client,
+                    task_manager,
+                    ..
+                } = new_partial(&config)?;
+                Ok((cmd.run(client, config.chain_spec), task_manager))
+            })
+        }
+        Some(Subcommand::ImportBlocks(cmd)) => {
+            let runner = cli.create_runner(cmd)?;
+            set_default_ss58_version(&runner.config().chain_spec);
+
+            runner.async_run(|config| {
+                let PartialComponents {
+                    client,
+                    task_manager,
+                    import_queue,
+                    ..
+                } = new_partial(&config)?;
+                Ok((cmd.run(client, import_queue), task_manager))
+            })
+        }
+        Some(Subcommand::PurgeChain(cmd)) => {
+            let runner = cli.create_runner(cmd)?;
+            set_default_ss58_version(&runner.config().chain_spec);
+
+            runner.sync_run(|config| cmd.run(config.database))
+        }
+        Some(Subcommand::Revert(cmd)) => {
+            let runner = cli.create_runner(cmd)?;
+            set_default_ss58_version(&runner.config().chain_spec);
+
+            runner.async_run(|config| {
+                let PartialComponents {
+                    client,
+                    task_manager,
+                    backend,
+                    ..
+                } = new_partial(&config)?;
+                Ok((cmd.run(client, backend), task_manager))
             })
         }
     }

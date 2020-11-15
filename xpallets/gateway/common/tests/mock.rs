@@ -1,8 +1,8 @@
 // Copyright 2019-2020 ChainX Project Authors. Licensed under GPL-3.0.
 
-use core::time::Duration;
 use std::cell::RefCell;
 use std::str::FromStr;
+use std::time::Duration;
 
 use codec::{Decode, Encode};
 
@@ -19,15 +19,12 @@ use sp_runtime::{
 };
 
 use chainx_primitives::AssetId;
-use xpallet_assets::{AssetRestriction, AssetRestrictions};
+pub use xp_protocol::{X_BTC, X_ETH};
+use xpallet_assets::AssetRestrictions;
 use xpallet_assets_registrar::{AssetInfo, Chain};
 use xpallet_gateway_bitcoin::{BtcHeader, BtcNetwork, BtcParams, BtcTxVerifier, Compact};
-
 use xpallet_gateway_common::trustees;
 use xpallet_gateway_common::types::TrusteeInfoConfig;
-
-pub use xpallet_protocol::X_BTC;
-pub use xpallet_protocol::X_ETH;
 use xpallet_support::traits::MultisigAddressFor;
 
 pub(crate) type AccountId = AccountId32;
@@ -81,7 +78,7 @@ impl frame_system::Trait for Test {
     type MaximumBlockLength = MaximumBlockLength;
     type AvailableBlockRatio = AvailableBlockRatio;
     type Version = ();
-    type ModuleToIndex = ();
+    type PalletInfo = ();
     type AccountData = pallet_balances::AccountData<Balance>;
     type OnNewAccount = ();
     type OnKilledAccount = ();
@@ -92,6 +89,7 @@ parameter_types! {
     pub const ExistentialDeposit: u64 = 0;
 }
 impl pallet_balances::Trait for Test {
+    type MaxLocks = ();
     type Balance = Balance;
     type DustRemoval = ();
     type Event = ();
@@ -167,7 +165,7 @@ impl UnixTime for Timestamp {
 impl xpallet_gateway_bitcoin::Trait for Test {
     type Event = ();
     type UnixTime = Timestamp;
-    type AccountExtractor = xpallet_gateway_common::extractor::Extractor;
+    type AccountExtractor = xpallet_gateway_bitcoin::OpReturnExtractor;
     type TrusteeSessionProvider =
         xpallet_gateway_common::trustees::bitcoin::BtcTrusteeSessionManager<Test>;
     type TrusteeOrigin = EnsureSignedBy<trustees::bitcoin::BtcTrusteeMultisig<Test>, AccountId>;
@@ -187,7 +185,7 @@ pub(crate) fn btc() -> (AssetId, AssetInfo, AssetRestrictions) {
             b"ChainX's cross-chain Bitcoin".to_vec(),
         )
         .unwrap(),
-        AssetRestriction::DestroyUsable.into(),
+        AssetRestrictions::DESTROY_USABLE,
     )
 }
 
@@ -251,7 +249,6 @@ impl ExtBuilder {
             ), // retargeting_factor
             verifier: BtcTxVerifier::Recover,
             confirmation_number: 4,
-            reserved_block: 2100,
             btc_withdrawal_fee: 500000,
             max_withdrawal_count: 100,
         }

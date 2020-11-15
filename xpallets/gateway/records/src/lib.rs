@@ -25,9 +25,10 @@ use sp_runtime::traits::StaticLookup;
 use orml_utilities::with_transaction_result;
 
 use chainx_primitives::{AddrStr, AssetId};
+use xp_logging::{error, info};
 use xp_runtime::Memo;
 use xpallet_assets::{AssetType, BalanceOf, Chain};
-use xpallet_support::{error, info, try_addr};
+use xpallet_support::try_addr;
 
 pub use self::types::{Withdrawal, WithdrawalRecord, WithdrawalRecordId, WithdrawalState};
 use crate::weight_info::WeightInfo;
@@ -41,7 +42,7 @@ pub type WithdrawalRecordOf<T> = WithdrawalRecord<
 /// The module's config trait.
 ///
 /// `frame_system::Trait` should always be included in our implied traits.
-pub trait Trait: frame_system::Trait + xpallet_assets::Trait {
+pub trait Trait: xpallet_assets::Trait {
     /// The overarching event type.
     type Event: From<Event<Self>> + Into<<Self as frame_system::Trait>::Event>;
 
@@ -75,11 +76,17 @@ decl_event!(
         Balance = BalanceOf<T>,
         WithdrawalRecord = WithdrawalRecordOf<T>
     {
+        /// An account deposited some asset. [who, asset_id, amount]
         Deposited(AccountId, AssetId, Balance),
-        WithdrawalApplied(WithdrawalRecordId, WithdrawalRecord),
+        /// A withdrawal application was created. [withdrawal_id, record_info]
+        WithdrawalCreated(WithdrawalRecordId, WithdrawalRecord),
+        /// A withdrawal proposal was processed. [withdrawal_id]
         WithdrawalProcessed(WithdrawalRecordId),
+        /// A withdrawal proposal was recovered. [withdrawal_id]
         WithdrawalRecovered(WithdrawalRecordId),
+        /// A withdrawal proposal was canceled. [withdrawal_id, withdrawal_state]
         WithdrawalCanceled(WithdrawalRecordId, WithdrawalState),
+        /// A withdrawal proposal was finished successfully. [withdrawal_id, withdrawal_state]
         WithdrawalFinished(WithdrawalRecordId, WithdrawalState),
     }
 );
@@ -199,12 +206,12 @@ impl<T: Trait> Module<T> {
 impl<T: Trait> Module<T> {
     /// Deposit asset.
     ///
-    /// Note: this func has include deposit_init and deposit_finish (not wait for block confirm process)
+    /// NOTE: this function has included deposit_init and deposit_finish (not wait for block confirm)
     pub fn deposit(who: &T::AccountId, asset_id: AssetId, balance: BalanceOf<T>) -> DispatchResult {
         xpallet_assets::Module::<T>::ensure_not_native_asset(&asset_id)?;
 
         info!(
-            "[deposit]|who:{:?}|asset_id:{:}|balance:{:?}",
+            "[deposit] who:{:?}, id:{}, balance:{:?}",
             who, asset_id, balance
         );
 
@@ -217,7 +224,7 @@ impl<T: Trait> Module<T> {
     ///
     /// WithdrawalRecord State: `Applying`
     ///
-    /// Note: this func has include withdrawal_init and withdrawal_locking
+    /// NOTE: this function has included withdrawal_init and withdrawal_locking.
     pub fn withdraw(
         who: &T::AccountId,
         asset_id: AssetId,
@@ -230,7 +237,7 @@ impl<T: Trait> Module<T> {
 
         let id = Self::id();
         info!(
-            "[apply_withdrawal]|id:{:}|who:{:?}|asset_id:{:}|balance:{:?}|addr:{:?}|memo:{:}",
+            "[apply_withdrawal] id:{}, who:{:?}, asset id:{}, balance:{:?}, addr:{:?}, memo:{}",
             id,
             who,
             asset_id,
@@ -251,7 +258,7 @@ impl<T: Trait> Module<T> {
         let next_id = id.checked_add(1_u32).unwrap_or(0);
         NextWithdrawalRecordId::put(next_id);
 
-        Self::deposit_event(Event::<T>::WithdrawalApplied(id, record));
+        Self::deposit_event(Event::<T>::WithdrawalCreated(id, record));
         Ok(())
     }
 
@@ -270,7 +277,7 @@ impl<T: Trait> Module<T> {
     ) -> DispatchResult {
         if curr_state != WithdrawalState::Applying {
             error!(
-                "[process_withdrawal]|Current withdrawal state must be `Applying`|id:{:}|state:{:?}",
+                "[process_withdrawal] id:{}, current withdrawal state ({:?}) must be `Applying`",
                 id, curr_state
             );
             return Err(Error::<T>::NotApplyingState.into());
@@ -305,7 +312,7 @@ impl<T: Trait> Module<T> {
     ) -> DispatchResult {
         if curr_state != WithdrawalState::Processing {
             error!(
-                "[recover_withdrawal]|Current withdrawal state must be `Processing`|id:{:}|state:{:?}",
+                "[recover_withdrawal] id:{}, current withdrawal state ({:?}) must be `Processing`",
                 id, curr_state
             );
             return Err(Error::<T>::NotProcessingState.into());
@@ -322,9 +329,10 @@ impl<T: Trait> Module<T> {
         let (record, curr_state) = Self::ensure_withdrawal_records_exists(id)?;
         if record.applicant() != who {
             error!(
-                "[cancel_withdrawal]|The applicant is not this account|applicant:{:?}|who:{:?}",
-                record.applicant(),
-                who
+                "[cancel_withdrawal] id:{}, account {:?} is not the applicant {:?}",
+                id,
+                who,
+                record.applicant()
             );
             return Err(Error::<T>::InvalidAccount.into());
         }
@@ -340,7 +348,7 @@ impl<T: Trait> Module<T> {
     ) -> DispatchResult {
         if curr_state != WithdrawalState::Applying {
             error!(
-                "[cancel_withdrawal]|Current withdrawal state must be `Applying`|id:{:}|state:{:?}",
+                "[cancel_withdrawal] id:{}, current withdrawal state ({:?}) must be `Applying`",
                 id, curr_state
             );
             return Err(Error::<T>::NotApplyingState.into());
@@ -361,7 +369,7 @@ impl<T: Trait> Module<T> {
     ///
     /// WithdrawalRecord State: `Processing` ==> `NormalFinish`
     ///
-    /// Note:
+    /// NOTE:
     /// when the withdrawal id is passed by runtime self logic, just pass `None`,
     /// when the withdrawal id is passed by the parameter from call(which means the id is from outside),
     /// should pass `Some(chain)` to verify whether the withdrawal is related to this chain.
@@ -389,7 +397,7 @@ impl<T: Trait> Module<T> {
     ) -> DispatchResult {
         if curr_state != WithdrawalState::Processing {
             error!(
-                "[finish_withdrawal]|Current withdrawal state must be `Processing`|id:{:}|state:{:?}",
+                "[finish_withdrawal] id:{}, current withdrawal state ({:?}) must be `Processing`",
                 id, curr_state
             );
             return Err(Error::<T>::NotProcessingState.into());
@@ -452,7 +460,11 @@ impl<T: Trait> Module<T> {
                 Self::finish_withdrawal_impl(id, record, curr_state, new_state)
             }
             _ => {
-                error!("[set_withdrawal_state_by_root]|Should not meet this branch in normally, except in root|current state:{:?}|new state:{:?}", curr_state, new_state);
+                error!(
+                    "[set_withdrawal_state_by_root] Shouldn't happen normally, unless called by root, \
+                    current state:{:?}, new state:{:?}",
+                    curr_state, new_state
+                );
                 Err("Do not expect this state in set_withdrawal_state_by_root".into())
             }
         }
@@ -466,14 +478,20 @@ impl<T: Trait> Module<T> {
         let (record, state) = Self::ensure_withdrawal_records_exists(id)?;
         Self::ensure_asset_belongs_to_chain(record.asset_id(), chain)?;
         if state != WithdrawalState::Processing {
-            error!("[set_withdrawal_state_by_trustees]|Current withdrawal state must be `Processing` for this WithdrawalRecord|id:{:}|state:{:?}", id, state);
+            error!(
+                "[set_withdrawal_state_by_trustees] id:{}, current withdrawal state ({:?}) must be `Processing`",
+                id, state
+            );
             return Err(Error::<T>::NotProcessingState.into());
         }
 
         match new_state {
             WithdrawalState::RootFinish | WithdrawalState::RootCancel => { /*do nothing*/ }
             _ => {
-                error!("[set_withdrawal_state_by_trustees]|New withdrawal state must be `RootFinish` or `RootCancel`|state:{:?}", new_state);
+                error!(
+                    "[set_withdrawal_state_by_trustees] id:{}, new withdrawal state ({:?}) must be `RootFinish` or `RootCancel`",
+                    id, new_state
+                );
                 return Err(Error::<T>::InvalidState.into());
             }
         }

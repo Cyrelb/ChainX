@@ -1,29 +1,33 @@
 // Copyright 2019-2020 ChainX Project Authors. Licensed under GPL-3.0.
 
-use super::*;
+use sp_std::cmp::Ordering;
+
 use codec::Encode;
+use frame_support::weights::Weight;
 use sp_arithmetic::traits::BaseArithmetic;
 use sp_core::crypto::UncheckedFrom;
 use sp_runtime::{traits::Hash, Perbill};
 use sp_staking::offence::{OffenceDetails, OnOffenceHandler};
-use sp_std::cmp::Ordering;
+
 use xp_mining_common::{
     generic_weight_factors, BaseMiningWeight, Claim, ComputeMiningWeight, WeightFactors, WeightType,
 };
 use xp_mining_staking::SessionIndex;
 
+use crate::*;
+
 impl<Balance, BlockNumber> BaseMiningWeight<Balance, BlockNumber>
-    for ValidatorLedger<Balance, BlockNumber>
+    for ValidatorLedger<Balance, VoteWeight, BlockNumber>
 where
     Balance: Default + BaseArithmetic + Copy,
     BlockNumber: Default + BaseArithmetic + Copy,
 {
     fn amount(&self) -> Balance {
-        self.total
+        self.total_nomination
     }
 
     fn set_amount(&mut self, new: Balance) {
-        self.total = new;
+        self.total_nomination = new;
     }
 
     fn last_acum_weight(&self) -> WeightType {
@@ -44,7 +48,7 @@ where
 }
 
 impl<Balance, BlockNumber> BaseMiningWeight<Balance, BlockNumber>
-    for NominatorLedger<Balance, BlockNumber>
+    for NominatorLedger<Balance, VoteWeight, BlockNumber>
 where
     Balance: Default + BaseArithmetic + Copy,
     BlockNumber: Default + BaseArithmetic + Copy,
@@ -151,24 +155,24 @@ impl<T: Trait> Module<T> {
         current_block: T::BlockNumber,
         delta: Delta<BalanceOf<T>>,
     ) {
-        Nominations::<T>::mutate(nominator, validator, |claimer_ledger| {
-            claimer_ledger.nomination = delta.calculate(claimer_ledger.nomination);
-            claimer_ledger.last_vote_weight = new_weight;
-            claimer_ledger.last_vote_weight_update = current_block;
+        Nominations::<T>::mutate(nominator, validator, |claimer| {
+            claimer.nomination = delta.calculate(claimer.nomination);
+            claimer.last_vote_weight = new_weight;
+            claimer.last_vote_weight_update = current_block;
         });
     }
 
     ///
     pub(crate) fn set_validator_vote_weight(
-        validator: &T::AccountId,
+        who: &T::AccountId,
         new_weight: WeightType,
         current_block: T::BlockNumber,
         delta: Delta<BalanceOf<T>>,
     ) {
-        ValidatorLedgers::<T>::mutate(validator, |validator_ledger| {
-            validator_ledger.total = delta.calculate(validator_ledger.total);
-            validator_ledger.last_total_vote_weight = new_weight;
-            validator_ledger.last_total_vote_weight_update = current_block;
+        ValidatorLedgers::<T>::mutate(who, |validator| {
+            validator.total_nomination = delta.calculate(validator.total_nomination);
+            validator.last_total_vote_weight = new_weight;
+            validator.last_total_vote_weight_update = current_block;
         });
     }
 
@@ -201,7 +205,11 @@ impl<T: Trait> Claim<T::AccountId> for Module<T> {
 
         Self::allocate_dividend(claimer, &claimee_pot, dividend)?;
 
-        Self::deposit_event(RawEvent::Claim(claimer.clone(), claimee.clone(), dividend));
+        Self::deposit_event(Event::<T>::Claimed(
+            claimer.clone(),
+            claimee.clone(),
+            dividend,
+        ));
 
         let new_target_weight = target_weight - source_weight;
 
@@ -218,12 +226,12 @@ impl<T: Trait> Module<T> {
         // Only the active validators can be rewarded.
         let validator_rewards = Self::distribute_session_reward(session_index);
 
-        let offenders = <OffendersInSession<T>>::take();
-        if !offenders.is_empty() {
+        // Reset the session offenders.
+        if let Some(offenders) = SessionOffenders::<T>::take() {
             let force_chilled = Self::slash_offenders_in_session(offenders, validator_rewards);
             if !force_chilled.is_empty() {
-                debug!("Force chilled: {:?}", force_chilled);
-                Self::deposit_event(RawEvent::ForceChilled(session_index, force_chilled));
+                debug!("Force chilled:{:?}", force_chilled);
+                Self::deposit_event(Event::<T>::ForceChilled(session_index, force_chilled));
                 // Force a new era if some offender's reward pot has been wholly slashed.
                 Self::ensure_new_era();
             }
@@ -234,7 +242,7 @@ impl<T: Trait> Module<T> {
 impl<T: Trait> Module<T> {
     fn new_session(session_index: SessionIndex) -> Option<Vec<T::AccountId>> {
         debug!(
-            "[new_session]session_index:{:?}, current_era:{:?}",
+            "[new_session] session_index:{:?}, current_era:{:?}",
             session_index,
             Self::current_era(),
         );
@@ -288,7 +296,7 @@ impl<T: Trait> Module<T> {
 
         let next_active_era = Self::active_era().map(|e| e.index + 1).unwrap_or(0);
         debug!(
-            "[start_session]start_session:{:?}, next_active_era:{:?}",
+            "[start_session] start_session:{}, next_active_era:{:?}",
             start_session, next_active_era
         );
         if let Some(next_active_era_start_session_index) =
@@ -358,7 +366,6 @@ impl<T: Trait> pallet_session::SessionManager<T::AccountId> for Module<T> {
     }
 }
 
-type OnOffenceRes = u64;
 /// Validator ID that reported this offence.
 type Reporter<T> = <T as frame_system::Trait>::AccountId;
 
@@ -377,7 +384,7 @@ type Offender<T> = IdentificationTuple<T>;
 
 /// This is intended to be used with `FilterHistoricalOffences` in Substrate/Staking.
 /// In ChainX, we always apply the slash immediately, no deferred slash.
-impl<T: Trait> OnOffenceHandler<Reporter<T>, IdentificationTuple<T>, OnOffenceRes> for Module<T>
+impl<T: Trait> OnOffenceHandler<Reporter<T>, IdentificationTuple<T>, Weight> for Module<T>
 where
     T: pallet_session::Trait<ValidatorId = <T as frame_system::Trait>::AccountId>,
     T::SessionHandler: pallet_session::SessionHandler<<T as frame_system::Trait>::AccountId>,
@@ -390,22 +397,28 @@ where
     fn on_offence(
         offenders: &[OffenceDetails<Reporter<T>, Offender<T>>],
         slash_fraction: &[Perbill],
-        _slash_session: SessionIndex,
-    ) -> Result<OnOffenceRes, ()> {
-        debug!("[on_offence]offenders:{:?}", offenders);
-        // TODO: make use of slash_fraction
-        for (details, _slash_fraction) in offenders.iter().zip(slash_fraction) {
-            // reporters are actually always empty.
-            let (offender, _reporters) = &details.offender;
+        slash_session: SessionIndex,
+    ) -> Result<Weight, ()> {
+        let offenders_tuple = offenders
+            .iter()
+            .zip(slash_fraction)
+            .map(|(details, slash_fraction)| {
+                // Reporters are ignored for now.
+                let (offender, _reporters) = &details.offender;
+                (offender, slash_fraction)
+            })
+            .collect::<BTreeMap<_, _>>();
 
-            // FIXME: record the offenders by session_index?
-            <OffendersInSession<T>>::mutate(|offenders| {
-                if !offenders.contains(offender) {
-                    offenders.push(offender.clone())
-                }
-            });
-        }
-        Ok(0)
+        debug!(
+            "Reported the offenders:{:?} happened in session {:?}",
+            offenders_tuple, slash_session
+        );
+
+        // Write a temp environment storage so that we can sum the session reward
+        // together later and then perform the slashing operation only once.
+        <SessionOffenders<T>>::put(offenders_tuple);
+
+        Ok(1)
     }
 
     fn can_report() -> bool {

@@ -1,8 +1,8 @@
 // Copyright 2019-2020 ChainX Project Authors. Licensed under GPL-3.0.
 
 use super::*;
+use xp_logging::debug;
 use xp_mining_staking::SessionIndex;
-use xpallet_support::debug;
 
 mod proposal09;
 
@@ -34,7 +34,7 @@ impl<T: Trait> Module<T> {
     #[inline]
     pub(crate) fn mint(receiver: &T::AccountId, value: BalanceOf<T>) {
         T::Currency::deposit_creating(receiver, value);
-        Self::deposit_event(RawEvent::Mint(receiver.clone(), value));
+        Self::deposit_event(Event::<T>::Minted(receiver.clone(), value));
     }
 
     /// Reward a (potential) validator by a specific amount.

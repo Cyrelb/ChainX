@@ -1,20 +1,25 @@
 {
-    "AssetType": {
-        "_enum": [
-            "Usable",
-            "Locked",
-            "Reserved",
-            "ReservedWithdrawal",
-            "ReservedDexSpot",
-            "ReservedXRC20"
-        ]
-    },
     "Chain": {
         "_enum": [
             "ChainX",
             "Bitcoin",
             "Ethereum",
             "Polkadot"
+        ]
+    },
+    "NetworkType": {
+        "_enum": [
+            "Mainnet",
+            "Testnet"
+        ]
+    },
+    "AssetType": {
+        "_enum": [
+            "Usable",
+            "Locked",
+            "Reserved",
+            "ReservedWithdrawal",
+            "ReservedDexSpot"
         ]
     },
     "OrderType": {
@@ -33,12 +38,6 @@
         "_enum": [
             "Bonded",
             "BondedWithdrawal"
-        ]
-    },
-    "NetworkType": {
-        "_enum": [
-            "Mainnet",
-            "Testnet"
         ]
     },
     "Memo": "Text",
@@ -97,8 +96,8 @@
         "assetId": "AssetId",
         "miningPower": "FixedAssetPower",
         "rewardPot": "AccountId",
-        "rewardPotBalance": "Balance",
-        "lastTotalMiningWeight": "WeightType",
+        "rewardPotBalance": "RpcBalance",
+        "lastTotalMiningWeight": "RpcMiningWeight",
         "lastTotalMiningWeightUpdate": "BlockNumber"
     },
     "AssetLedger": {
@@ -126,13 +125,13 @@
         "lockedUntil": "BlockNumber"
     },
     "ValidatorLedger": {
-        "total": "Balance",
-        "lastTotalVoteWeight": "WeightType",
+        "totalNomination": "Balance",
+        "lastTotalVoteWeight": "VoteWeight",
         "lastTotalVoteWeightUpdate": "BlockNumber"
     },
     "NominatorLedger": {
         "nomination": "Balance",
-        "lastVoteWeight": "WeightType",
+        "lastVoteWeight": "VoteWeight",
         "lastVoteWeightUpdate": "BlockNumber",
         "unbondedChunks": "Vec<Unbonded>"
     },
@@ -150,12 +149,23 @@
         "asset": "u32",
         "staking": "u32"
     },
+    "InclusionFee": {
+        "baseFee": "Balance",
+        "lenFee": "Balance",
+        "adjustedWeightFee": "Balance"
+    },
+    "FeeDetails": {
+        "inclusionFee": "Option<InclusionFee<Balance>>",
+        "extraFee": "Balance",
+        "tip": "Balance",
+        "finalFee": "Balance"
+    },
     "UnbondedIndex": "u32",
     "Desc": "Text",
     "Token": "Text",
     "AddrStr": "Text",
     "HandicapInfo": "Handicap",
-    "Price": "Balance",
+    "Price": "u128",
     "OrderId": "u64",
     "TradingPairId": "u32",
     "TradingHistoryIndex": "u64",
@@ -179,7 +189,7 @@
     },
     "AssetId": "u32",
     "MiningWeight": "u128",
-    "WeightType": "u128",
+    "VoteWeight": "u128",
     "ReferralId": "Text",
     "AssetRestriction": {
         "_enum": [
@@ -192,16 +202,9 @@
         ]
     },
     "AssetRestrictions": {
-        "mask": "u32"
+        "bits": "u32"
     },
-    "BtcHeader": {
-        "version": "u32",
-        "previousHeaderHash": "H256",
-        "merkleRootHash": "H256",
-        "time": "u32",
-        "bits": "BtcCompact",
-        "nonce": "u32"
-    },
+    "BtcHeader": "Vec<u8>",
     "BtcNetwork": {
         "_enum": [
             "Mainnet",
@@ -226,22 +229,6 @@
         "submitter": "AccountId",
         "orderType": "OrderType",
         "createdAt": "BlockNumber"
-    },
-    "RpcOrder": {
-        "orderId": "OrderId",
-        "side": "Side",
-        "price": "Price",
-        "amount": "Balance",
-        "pairId": "TradingPairId",
-        "submitter": "AccountId",
-        "orderType": "OrderType",
-        "createdAt": "BlockNumber",
-        "status": "OrderStatus",
-        "remaining": "Balance",
-        "executedIndices": "Vec<TradingHistoryIndex>",
-        "alreadyFilled": "Balance",
-        "reservedBalance": "Balance",
-        "lastUpdateAt": "BlockNumber"
     },
     "TotalAssetInfo": {
         "info": "AssetInfo",
@@ -304,13 +291,8 @@
         "hotAddress": "BtcTrusteeAddrInfo",
         "coldAddress": "BtcTrusteeAddrInfo"
     },
-    "BtcCompact": "u32",
     "BtcTransaction": "Vec<u8>",
-    "BtcPartialMerkleTree": {
-        "txCount": "u32",
-        "hashes": "Vec<H256>",
-        "bits": "Vec<bool>"
-    },
+    "BtcPartialMerkleTree": "Vec<u8>",
     "BtcRelayedTxInfo": {
         "blockHash": "H256",
         "merkleProof": "BtcPartialMerkleTree"
@@ -360,36 +342,79 @@
             "RuntimeInterface"
         ]
     },
+    "RpcTotalAssetInfo": {
+        "info": "AssetInfo",
+        "balance": "BTreeMap<AssetType, RpcBalance>",
+        "isOnline": "bool",
+        "restrictions": "AssetRestrictions"
+    },
+    "RpcOrder": {
+        "orderId": "OrderId",
+        "side": "Side",
+        "price": "RpcPrice",
+        "amount": "RpcBalance",
+        "pairId": "TradingPairId",
+        "submitter": "AccountId",
+        "orderType": "OrderType",
+        "createdAt": "BlockNumber",
+        "status": "OrderStatus",
+        "remaining": "RpcBalance",
+        "executedIndices": "Vec<TradingHistoryIndex>",
+        "alreadyFilled": "RpcBalance",
+        "reservedBalance": "RpcBalance",
+        "lastUpdateAt": "BlockNumber"
+    },
+    "RpcWithdrawalRecord": {
+        "assetId": "AssetId",
+        "applicant": "AccountId",
+        "balance": "RpcBalance",
+        "addr": "String",
+        "ext": "String",
+        "height": "BlockNumber",
+        "state": "WithdrawalState"
+    },
+    "RpcInclusionFee": {
+        "baseFee": "RpcBalance",
+        "lenFee": "RpcBalance",
+        "adjustedWeightFee": "RpcBalance"
+    },
+    "RpcFeeDetails": {
+        "inclusionFee": "Option<RpcInclusionFee>",
+        "tip": "RpcBalance",
+        "extraFee": "RpcBalance",
+        "finalFee": "RpcBalance"
+    },
     "ValidatorInfo": {
         "account": "AccountId",
         "registeredAt": "BlockNumber",
         "isChilled": "bool",
         "lastChilled": "Option<BlockNumber>",
-        "total": "Balance",
-        "lastTotalVoteWeight": "WeightType",
+        "totalNomination": "RpcBalance",
+        "lastTotalVoteWeight": "RpcVoteWeight",
         "lastTotalVoteWeightUpdate": "BlockNumber",
         "isValidating": "bool",
-        "selfBonded": "Balance",
+        "selfBonded": "RpcBalance",
+        "referralId": "String",
         "rewardPotAccount": "AccountId",
-        "rewardPotBalance": "Balance"
+        "rewardPotBalance": "RpcBalance"
     },
     "FullPairInfo": {
         "baseCurrency": "AssetId",
-        "highestBid": "Price",
+        "highestBid": "RpcPrice",
         "id": "TradingPairId",
-        "latestPrice": "Price",
+        "latestPrice": "RpcPrice",
         "latestPriceUpdatedAt": "BlockNumber",
-        "lowestAsk": "Price",
-        "maxValidBid": "Price",
-        "minValidAsk": "Price",
+        "lowestAsk": "RpcPrice",
+        "maxValidBid": "RpcPrice",
+        "minValidAsk": "RpcPrice",
         "pipDecimals": "u32",
         "quoteCurrency": "AssetId",
         "tickDecimals": "u32",
         "tradable": "bool"
     },
     "Depth": {
-        "asks": "Vec<(Price, Balance)>",
-        "bids": "Vec<(Price, Balance)>"
+        "asks": "Vec<(RpcPrice, RpcBalance)>",
+        "bids": "Vec<(RpcPrice, RpcBalance)>"
     },
     "Page": {
         "pageIndex": "u32",
@@ -398,16 +423,10 @@
     },
     "String": "Text",
     "Balance": "u128",
-    "MiningPower": "u128",
+    "RpcPrice": "String",
+    "RpcBalance": "String",
+    "RpcMiningWeight": "String",
+    "RpcVoteWeight": "String",
     "FullIdentification": "ValidatorId",
-    "WithdrawalRecordOf": "WithdrawalRecord",
-    "RpcWithdrawalRecord": {
-        "assetId": "AssetId",
-        "applicant": "AccountId",
-        "balance": "Balance",
-        "addr": "String",
-        "ext": "String",
-        "height": "BlockNumber",
-        "state": "WithdrawalState"
-    }
+    "WithdrawalRecordOf": "WithdrawalRecord"
 }

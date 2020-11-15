@@ -7,7 +7,7 @@ use frame_system::RawOrigin;
 
 use crate::Module as XAssets;
 
-const ASSET_ID: AssetId = xpallet_protocol::X_BTC;
+const ASSET_ID: AssetId = xp_protocol::X_BTC;
 const SEED: u32 = 0;
 
 benchmarks! {
@@ -51,14 +51,13 @@ benchmarks! {
         balances.insert(AssetType::Reserved, 1000.into());
         balances.insert(AssetType::ReservedWithdrawal, 1000.into());
         balances.insert(AssetType::ReservedDexSpot, 1000.into());
-        balances.insert(AssetType::ReservedXRC20, 1000.into());
     }: set_balance(RawOrigin::Root, user_lookup, ASSET_ID, balances.clone())
     verify {
         assert_eq!(XAssets::<T>::asset_balance(&user, &ASSET_ID), balances);
     }
 
     set_asset_limit {
-        let res = AssetRestriction::Deposit|AssetRestriction::DestroyUsable;
+        let res = AssetRestrictions::DEPOSIT | AssetRestrictions::DESTROY_USABLE;
     }: set_asset_limit(RawOrigin::Root, ASSET_ID, res)
     verify {
         assert_eq!(XAssets::<T>::asset_restrictions_of(&ASSET_ID), res);

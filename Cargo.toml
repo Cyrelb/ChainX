@@ -1,13 +1,9 @@
 [package]
 name = "chainx"
-version = "2.0.0-alpha.0"
+version = "2.0.0-beta.0"
 authors = ["The ChainX Authors"]
 edition = "2018"
 description = "Fully Decentralized Interchain Crypto Asset Management on Polkadot"
-
-[patch.crates-io]
-# patch for substrate runtime module
-pallet-transaction-payment = { path = "./frame/transaction-payment" }
 
 [dependencies]
 cli = { package = "chainx-cli", path = "cli" }
@@ -20,11 +16,16 @@ members = [
     "cli",
     "executor",
     "primitives",
-    "primitives/runtime",
+    "primitives/assets-registrar",
+    "primitives/gateway/common",
+    "primitives/genesis-builder",
+    "primitives/io",
+    "primitives/logging",
     "primitives/mining/common",
     "primitives/mining/staking",
-    "primitives/assets-registrar",
-    "primitives/io",
+    "primitives/protocol",
+    "primitives/rpc",
+    "primitives/runtime",
     "rpc",
     "runtime",
 
@@ -32,6 +33,9 @@ members = [
     "xpallets/assets/rpc",
     "xpallets/assets/rpc/runtime-api",
     "xpallets/assets-registrar",
+    "xpallets/dex/spot",
+    "xpallets/dex/spot/rpc",
+    "xpallets/dex/spot/rpc/runtime-api",
     "xpallets/gateway/bitcoin",
     "xpallets/gateway/common",
     "xpallets/gateway/common/rpc",
@@ -39,18 +43,18 @@ members = [
     "xpallets/gateway/records",
     "xpallets/gateway/records/rpc",
     "xpallets/gateway/records/rpc/runtime-api",
-    "xpallets/dex/spot",
-    "xpallets/dex/spot/rpc",
-    "xpallets/dex/spot/rpc/runtime-api",
+    "xpallets/genesis-builder",
     "xpallets/mining/asset",
     "xpallets/mining/asset/rpc",
     "xpallets/mining/asset/rpc/runtime-api",
     "xpallets/mining/staking",
     "xpallets/mining/staking/rpc",
     "xpallets/mining/staking/rpc/runtime-api",
-    "xpallets/protocol",
     "xpallets/support",
     "xpallets/system",
+    "xpallets/transaction-fee",
+    "xpallets/transaction-fee/rpc",
+    "xpallets/transaction-fee/rpc/runtime-api",
 ]
 
 [profile.release]

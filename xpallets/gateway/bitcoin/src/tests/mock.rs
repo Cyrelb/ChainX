@@ -4,8 +4,8 @@
 
 use super::common::*;
 
-use core::time::Duration;
 use std::cell::RefCell;
+use std::time::Duration;
 
 // Substrate
 use frame_support::{impl_outer_origin, parameter_types, sp_io, weights::Weight};
@@ -16,16 +16,14 @@ use sp_runtime::{
     AccountId32, Perbill,
 };
 
-// light-bitcoin
-use light_bitcoin::primitives::Compact;
-
 use chainx_primitives::AssetId;
-use xpallet_assets::{AssetRestriction, AssetRestrictions};
+pub use xp_protocol::{X_BTC, X_ETH};
+use xpallet_assets::AssetRestrictions;
 use xpallet_assets_registrar::AssetInfo;
 use xpallet_gateway_common::types::TrusteeInfoConfig;
 
-pub use xpallet_protocol::X_BTC;
-pub use xpallet_protocol::X_ETH;
+// light-bitcoin
+use light_bitcoin::primitives::Compact;
 
 /// The AccountId alias in this test module.
 pub(crate) type AccountId = AccountId32;
@@ -68,7 +66,7 @@ impl frame_system::Trait for Test {
     type MaximumBlockLength = MaximumBlockLength;
     type AvailableBlockRatio = AvailableBlockRatio;
     type Version = ();
-    type ModuleToIndex = ();
+    type PalletInfo = ();
     type AccountData = pallet_balances::AccountData<Balance>;
     type OnNewAccount = ();
     type OnKilledAccount = ();
@@ -79,6 +77,7 @@ parameter_types! {
     pub const ExistentialDeposit: u64 = 0;
 }
 impl pallet_balances::Trait for Test {
+    type MaxLocks = ();
     type Balance = Balance;
     type DustRemoval = ();
     type Event = ();
@@ -146,7 +145,7 @@ impl UnixTime for Timestamp {
 impl Trait for Test {
     type Event = ();
     type UnixTime = Timestamp;
-    type AccountExtractor = xpallet_gateway_common::extractor::Extractor;
+    type AccountExtractor = OpReturnExtractor;
     type TrusteeSessionProvider =
         xpallet_gateway_common::trustees::bitcoin::BtcTrusteeSessionManager<Test>;
     type TrusteeOrigin = EnsureSignedBy<
@@ -177,7 +176,7 @@ pub(crate) fn btc() -> (AssetId, AssetInfo, AssetRestrictions) {
             b"ChainX's cross-chain Bitcoin".to_vec(),
         )
         .unwrap(),
-        AssetRestriction::DestroyUsable.into(),
+        AssetRestrictions::DESTROY_USABLE,
     )
 }
 
@@ -235,7 +234,6 @@ impl ExtBuilder {
             ), // retargeting_factor
             verifier: BtcTxVerifier::Recover,
             confirmation_number: 4,
-            reserved_block: 2100,
             btc_withdrawal_fee: 500000,
             max_withdrawal_count: 100,
         }
@@ -311,7 +309,6 @@ impl ExtBuilder {
             ), // retargeting_factor
             verifier: BtcTxVerifier::Recover,
             confirmation_number: 4,
-            reserved_block: 2100,
             btc_withdrawal_fee: 500000,
             max_withdrawal_count: 100,
         }

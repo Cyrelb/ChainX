@@ -8,7 +8,7 @@ use sp_runtime::DispatchResult;
 use sp_std::{cmp::Ordering, prelude::*};
 
 // ChainX
-use xpallet_support::{error, info};
+use xp_logging::{error, info};
 
 // light-bitcoin
 use light_bitcoin::primitives::H256;
@@ -63,7 +63,7 @@ fn look_back_confirmed_header<T: Trait>(
         height: header_info.height,
     });
     // e.g. when confirmations is 4, loop 3 times max
-    for _i in 1..confirmations {
+    for i in 1..confirmations {
         if let Some(current_info) = Module::<T>::headers(&prev_hash) {
             chain.push(BtcHeaderIndex {
                 hash: prev_hash,
@@ -73,8 +73,8 @@ fn look_back_confirmed_header<T: Trait>(
         } else {
             // if not find current header info, should be exceed genesis height, jump out of loop
             info!(
-                "[update_confirmed_header]|not find for hash:{:?}, current reverse count:{:}",
-                prev_hash, _i
+                "[update_confirmed_header] Can not find header ({:?}), current reverse count:{}",
+                prev_hash, i
             );
             break;
         }
@@ -150,7 +150,10 @@ pub fn check_confirmed_header<T: Trait>(header_info: &BtcHeaderInfo) -> Dispatch
                 Ordering::Less => {
                     // normal should not happen, for call `check_confirmed_header` should under
                     // current <= best
-                    error!("[check_confirmed_header]|should not happen, current confirmed is less than confirmed for this header|current:{:?}|now:{:?}", current_confirmed, now_confirmed);
+                    error!(
+                        "[check_confirmed_header] Should not happen, current confirmed is less than confirmed for this header, \
+                        current:{:?}, now:{:?}", current_confirmed, now_confirmed
+                    );
                     Err(Error::<T>::AncientFork.into())
                 }
             };
@@ -163,12 +166,12 @@ pub fn check_confirmed_header<T: Trait>(header_info: &BtcHeaderInfo) -> Dispatch
 pub fn set_main_chain<T: Trait>(height: u32, main_hash: &H256) {
     let hashes = Module::<T>::block_hash_for(&height);
     if hashes.len() == 1 {
-        MainChain::insert(&hashes[0], ());
+        MainChain::insert(&hashes[0], true);
         return;
     }
     for hash in hashes {
         if hash == *main_hash {
-            MainChain::insert(&hash, ());
+            MainChain::insert(&hash, true);
         } else {
             MainChain::remove(&hash);
         }
