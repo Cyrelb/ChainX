@@ -328,14 +328,6 @@ decl_module! {
 
         fn deposit_event() = default;
 
-        /// Remove this once `Immortals` is initialized.
-        fn on_runtime_upgrade() -> frame_support::weights::Weight {
-            // The `validator` call is still disallowed when initializing so
-            // immortals are just the genesis validators.
-            Immortals::<T>::put(Self::active_validator_set().collect::<Vec<_>>());
-            1
-        }
-
         /// Nominate the `target` with `value` of the origin account's balance locked.
         #[weight = T::WeightInfo::bond()]
         pub fn bond(origin, target: <T::Lookup as StaticLookup>::Source, #[compact] value: BalanceOf<T>) {
