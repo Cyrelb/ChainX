@@ -579,7 +579,7 @@ pub fn btc_test_config() -> Result<ChainSpec, String> {
             vesting_key.clone(),
             genesis_assets(),
             btc_genesis_params(include_str!("res/btc_genesis_params_testnet.json")),
-            mainnet_trustees(),
+            staging_testnet_trustees(),
         )
     };
 
